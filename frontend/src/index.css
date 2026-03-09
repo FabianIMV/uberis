@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-deep-900 text-slate-100 font-sans;
+    background: radial-gradient(ellipse at center, #0a0f2e 0%, #030712 100%);
+    min-height: 100vh;
+  }
+  ::-webkit-scrollbar {
+    width: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0a0f1e;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #06b6d4;
+    border-radius: 2px;
+  }
+}
+
+@layer utilities {
+  .text-glow-cyan {
+    text-shadow: 0 0 8px #06b6d4, 0 0 16px #06b6d4;
+  }
+  .text-glow-purple {
+    text-shadow: 0 0 8px #a855f7, 0 0 16px #a855f7;
+  }
+  .entity-node {
+    transition: all 0.3s ease;
+  }
+  .entity-node:hover {
+    filter: brightness(1.4);
+    transform: scale(1.1);
+  }
+}
