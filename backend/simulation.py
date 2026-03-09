@@ -329,10 +329,13 @@ async def advance_tick(session: AsyncSession) -> dict:
             state.total_dead = (state.total_dead or 0) + 1
 
             # Empathy grief: nearby entities with high empathy lose energy
+            entity_ids_in_tick = {e.id for e in entities}
             for peer in zone_peers:
-                if peer.id in [e.id for e in entities]:
+                if peer.id in entity_ids_in_tick:
                     empathy = peer.genome.get("empathy", 0.5)
-                    if empathy > 0.5 and entity.id in [m.get("target") for m in peer.memory if isinstance(m, dict)]:
+                    # Check if peer has interacted with the dying entity in memory
+                    known_entities = {m.get("entity_id") for m in peer.memory if isinstance(m, dict)}
+                    if empathy > 0.5 and entity.id in known_entities:
                         peer.energy = max(0.0, peer.energy - empathy * 10)
 
     # Update population history

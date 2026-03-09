@@ -95,23 +95,33 @@ export default function App() {
     fetchEvents()
   }, [fetchEntities, fetchWorldState, fetchEvents])
 
-  // Auto-tick
+  // Auto-tick using recursive setTimeout to avoid overlapping requests
   useEffect(() => {
-    if (isRunning) {
-      const id = setInterval(async () => {
-        try {
-          await fetch(`${API}/world/tick`, { method: 'POST' })
-          fetchEntities()
-          fetchWorldState()
-          fetchEvents()
-        } catch {}
-      }, 4000)
-      setTickInterval(id)
-      return () => clearInterval(id)
-    } else {
-      if (tickInterval) clearInterval(tickInterval)
+    if (!isRunning) return
+    let cancelled = false
+
+    const runTick = async () => {
+      if (cancelled) return
+      try {
+        await fetch(`${API}/world/tick`, { method: 'POST' })
+        fetchEntities()
+        fetchWorldState()
+        fetchEvents()
+      } catch {}
+      if (!cancelled) {
+        const id = setTimeout(runTick, 4000)
+        setTickInterval(id)
+      }
     }
-  }, [isRunning])
+
+    const id = setTimeout(runTick, 4000)
+    setTickInterval(id)
+
+    return () => {
+      cancelled = true
+      clearTimeout(id)
+    }
+  }, [isRunning, fetchEntities, fetchWorldState, fetchEvents])
 
   const handleEntitySelect = (entity) => {
     fetchSelectedEntity(entity.id)

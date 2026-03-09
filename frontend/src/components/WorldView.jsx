@@ -37,8 +37,10 @@ function getEntityColor(entity) {
   return EMOTION_COLORS[em] ?? EMOTION_COLORS.neutral
 }
 
+const TWO_PI = 2 * Math.PI
+
 function jitter(baseX, baseY, index, total) {
-  const angle = (index / Math.max(total, 1)) * 2 * Math.PI
+  const angle = (index / Math.max(total, 1)) * TWO_PI
   const radius = Math.min(8, total * 1.5)
   return {
     x: baseX + Math.cos(angle) * radius,

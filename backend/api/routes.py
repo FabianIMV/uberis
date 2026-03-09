@@ -141,11 +141,12 @@ async def entity_lineage(entity_id: str, session: AsyncSession = Depends(get_ses
         raise HTTPException(status_code=404, detail="Entity not found")
 
     # Get ancestors recursively (up to 3 generations)
+    from collections import deque
     ancestors = []
-    queue = list(entity.parent_ids)
+    queue: deque[str] = deque(entity.parent_ids)
     seen = set()
     while queue:
-        pid = queue.pop(0)
+        pid = queue.popleft()
         if pid in seen:
             continue
         seen.add(pid)
