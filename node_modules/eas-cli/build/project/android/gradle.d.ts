@@ -1,0 +1,9 @@
+import { Platform } from '@expo/eas-build-job';
+import { BuildProfile } from '@expo/eas-json';
+import { Client } from '../../vcs/vcs';
+export interface GradleBuildContext {
+    moduleName?: string;
+    flavor?: string;
+    buildType?: string;
+}
+export declare function resolveGradleBuildContextAsync(projectDir: string, buildProfile: BuildProfile<Platform.ANDROID>, vcsClient: Client): Promise<GradleBuildContext | undefined>;

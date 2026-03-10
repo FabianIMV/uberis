@@ -1,0 +1,56 @@
+import { ExpoConfig } from '@expo/config';
+import { Platform } from '@expo/eas-build-job';
+import { SubmitProfile } from '@expo/eas-json';
+import { Analytics, AnalyticsEventProperties } from '../analytics/AnalyticsManager';
+import { ExpoGraphqlClient } from '../commandUtils/context/contextUtils/createGraphqlClient';
+import { CredentialsContext } from '../credentials/context';
+import { Actor } from '../user/User';
+import { Client } from '../vcs/vcs';
+export interface SubmissionContext<T extends Platform> {
+    accountName: string;
+    archiveFlags: SubmitArchiveFlags;
+    credentialsCtx: CredentialsContext;
+    analyticsEventProperties: AnalyticsEventProperties;
+    exp: ExpoConfig;
+    nonInteractive: boolean;
+    isVerboseFastlaneEnabled: boolean;
+    groups: T extends Platform.IOS ? string[] : undefined;
+    platform: T;
+    profile: SubmitProfile<T>;
+    projectDir: string;
+    projectId: string;
+    projectName: string;
+    user: Actor;
+    graphqlClient: ExpoGraphqlClient;
+    analytics: Analytics;
+    vcsClient: Client;
+    applicationIdentifierOverride?: string;
+    whatToTest?: string;
+    specifiedProfile?: string;
+}
+export interface SubmitArchiveFlags {
+    latest?: boolean;
+    id?: string;
+    path?: string;
+    url?: string;
+}
+export declare function createSubmissionContextAsync<T extends Platform>(params: {
+    archiveFlags: SubmitArchiveFlags;
+    credentialsCtx?: CredentialsContext;
+    env?: Record<string, string>;
+    nonInteractive: boolean;
+    isVerboseFastlaneEnabled: boolean;
+    groups: string[] | undefined;
+    platform: T;
+    profile: SubmitProfile<T>;
+    projectDir: string;
+    applicationIdentifier?: string;
+    actor: Actor;
+    graphqlClient: ExpoGraphqlClient;
+    analytics: Analytics;
+    exp: ExpoConfig;
+    projectId: string;
+    vcsClient: Client;
+    whatToTest?: string;
+    specifiedProfile?: string;
+}): Promise<SubmissionContext<T>>;

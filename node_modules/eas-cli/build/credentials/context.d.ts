@@ -1,0 +1,50 @@
+import { ExpoConfig } from '@expo/config';
+import { Env } from '@expo/eas-build-job';
+import { EasJson } from '@expo/eas-json';
+import * as AndroidGraphqlClient from './android/api/GraphqlClient';
+import * as IosGraphqlClient from './ios/api/GraphqlClient';
+import AppStoreApi from './ios/appstore/AppStoreApi';
+import { Analytics } from '../analytics/AnalyticsManager';
+import { ExpoGraphqlClient } from '../commandUtils/context/contextUtils/createGraphqlClient';
+import { Actor } from '../user/User';
+import { Client } from '../vcs/vcs';
+export type CredentialsContextProjectInfo = {
+    exp: ExpoConfig;
+    projectId: string;
+};
+export declare class CredentialsContext {
+    private readonly options;
+    readonly android: typeof AndroidGraphqlClient;
+    readonly appStore: AppStoreApi;
+    readonly ios: typeof IosGraphqlClient;
+    readonly nonInteractive: boolean;
+    readonly autoAcceptCredentialReuse: boolean;
+    readonly freezeCredentials: boolean;
+    readonly projectDir: string;
+    readonly user: Actor;
+    readonly graphqlClient: ExpoGraphqlClient;
+    readonly analytics: Analytics;
+    readonly vcsClient: Client;
+    readonly easJsonCliConfig?: EasJson['cli'];
+    readonly usesBroadcastPushNotifications: boolean;
+    private shouldAskAuthenticateAppStore;
+    private readonly projectInfo;
+    constructor(options: {
+        projectInfo: CredentialsContextProjectInfo | null;
+        easJsonCliConfig?: EasJson['cli'];
+        nonInteractive: boolean;
+        projectDir: string;
+        user: Actor;
+        graphqlClient: ExpoGraphqlClient;
+        analytics: Analytics;
+        vcsClient: Client;
+        freezeCredentials?: boolean;
+        autoAcceptCredentialReuse?: boolean;
+        env?: Env;
+    });
+    get hasProjectContext(): boolean;
+    getExpoConfigAsync(): Promise<ExpoConfig>;
+    getProjectIdAsync(): Promise<string>;
+    ensureProjectContextAsync(): Promise<void>;
+    bestEffortAppStoreAuthenticateAsync(): Promise<void>;
+}

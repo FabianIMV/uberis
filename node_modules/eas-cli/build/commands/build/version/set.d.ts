@@ -1,0 +1,16 @@
+import EasCommand from '../../../commandUtils/EasCommand';
+export default class BuildVersionSetView extends EasCommand {
+    static description: string;
+    static flags: {
+        platform: import("@oclif/core/lib/interfaces").OptionFlag<"android" | "ios" | undefined, import("@oclif/core/lib/interfaces").CustomOptions>;
+        profile: import("@oclif/core/lib/interfaces").OptionFlag<string | undefined, import("@oclif/core/lib/interfaces").CustomOptions>;
+    };
+    static contextDefinition: {
+        vcsClient: import("../../../commandUtils/context/VcsClientContextField").default;
+        projectDir: import("../../../commandUtils/context/ProjectDirContextField").default;
+        getDynamicPublicProjectConfigAsync: import("../../../commandUtils/context/DynamicProjectConfigContextField").DynamicPublicProjectConfigContextField;
+        getDynamicPrivateProjectConfigAsync: import("../../../commandUtils/context/DynamicProjectConfigContextField").DynamicPrivateProjectConfigContextField;
+        loggedIn: import("../../../commandUtils/context/LoggedInContextField").default;
+    };
+    runAsync(): Promise<void>;
+}

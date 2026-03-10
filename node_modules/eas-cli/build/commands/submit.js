@@ -1,0 +1,166 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const tslib_1 = require("tslib");
+const eas_json_1 = require("@expo/eas-json");
+const core_1 = require("@oclif/core");
+const chalk_1 = tslib_1.__importDefault(require("chalk"));
+const EasCommand_1 = tslib_1.__importDefault(require("../commandUtils/EasCommand"));
+const generated_1 = require("../graphql/generated");
+const AppPlatform_1 = require("../graphql/types/AppPlatform");
+const log_1 = tslib_1.__importDefault(require("../log"));
+const platform_1 = require("../platform");
+const context_1 = require("../submit/context");
+const submit_1 = require("../submit/submit");
+const urls_1 = require("../submit/utils/urls");
+const profiles_1 = require("../utils/profiles");
+const statuspageService_1 = require("../utils/statuspageService");
+class Submit extends EasCommand_1.default {
+    static description = 'submit app binary to App Store and/or Play Store';
+    static aliases = ['build:submit'];
+    static flags = {
+        platform: core_1.Flags.option({
+            char: 'p',
+            options: ['android', 'ios', 'all'],
+        })(),
+        profile: core_1.Flags.string({
+            char: 'e',
+            description: 'Name of the submit profile from eas.json. Defaults to "production" if defined in eas.json.',
+        }),
+        latest: core_1.Flags.boolean({
+            description: 'Submit the latest build for specified platform',
+            exclusive: ['id', 'path', 'url'],
+        }),
+        id: core_1.Flags.string({
+            description: 'ID of the build to submit',
+            exclusive: ['latest, path, url'],
+        }),
+        path: core_1.Flags.string({
+            description: 'Path to the .apk/.aab/.ipa file',
+            exclusive: ['latest', 'id', 'url'],
+        }),
+        url: core_1.Flags.string({
+            description: 'App archive url',
+            exclusive: ['latest', 'id', 'path'],
+        }),
+        'what-to-test': core_1.Flags.string({
+            description: `Sets the "What to test" information in TestFlight (iOS only).`,
+        }),
+        verbose: core_1.Flags.boolean({
+            description: 'Always print logs from EAS Submit',
+            default: false,
+        }),
+        wait: core_1.Flags.boolean({
+            description: 'Wait for submission to complete',
+            default: true,
+            allowNo: true,
+        }),
+        'verbose-fastlane': core_1.Flags.boolean({
+            default: false,
+            description: 'Enable verbose logging for the submission process',
+        }),
+        groups: core_1.Flags.string({
+            description: 'Internal TestFlight testing groups to add the build to (iOS only). Learn more: https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers',
+            multiple: true,
+            char: 'g',
+        }),
+        'non-interactive': core_1.Flags.boolean({
+            default: false,
+            description: 'Run command in non-interactive mode',
+        }),
+    };
+    static contextDefinition = {
+        ...this.ContextOptions.LoggedIn,
+        ...this.ContextOptions.ProjectConfig,
+        ...this.ContextOptions.ProjectDir,
+        ...this.ContextOptions.Analytics,
+        ...this.ContextOptions.Vcs,
+    };
+    async runAsync() {
+        const { flags: rawFlags } = await this.parse(Submit);
+        const { loggedIn: { actor, graphqlClient }, privateProjectConfig: { exp, projectId, projectDir }, analytics, vcsClient, } = await this.getContextAsync(Submit, {
+            nonInteractive: false,
+            withServerSideEnvironment: null,
+        });
+        const flags = this.sanitizeFlags(rawFlags);
+        await (0, statuspageService_1.maybeWarnAboutEasOutagesAsync)(graphqlClient, [generated_1.StatuspageServiceName.EasSubmit]);
+        const flagsWithPlatform = await this.ensurePlatformSelectedAsync(flags);
+        const platforms = (0, platform_1.toPlatforms)(flagsWithPlatform.requestedPlatform);
+        const submissionProfiles = await (0, profiles_1.getProfilesAsync)({
+            type: 'submit',
+            easJsonAccessor: eas_json_1.EasJsonAccessor.fromProjectPath(projectDir),
+            platforms,
+            profileName: flagsWithPlatform.profile,
+            projectDir,
+        });
+        const submissions = [];
+        for (const submissionProfile of submissionProfiles) {
+            // this command doesn't make use of env when getting the project config
+            const ctx = await (0, context_1.createSubmissionContextAsync)({
+                platform: submissionProfile.platform,
+                projectDir,
+                profile: submissionProfile.profile,
+                archiveFlags: flagsWithPlatform.archiveFlags,
+                nonInteractive: flagsWithPlatform.nonInteractive,
+                isVerboseFastlaneEnabled: flagsWithPlatform.isVerboseFastlaneEnabled,
+                groups: flagsWithPlatform.groups,
+                actor,
+                graphqlClient,
+                analytics,
+                exp,
+                projectId,
+                vcsClient,
+                whatToTest: flagsWithPlatform.whatToTest,
+                specifiedProfile: flagsWithPlatform.profile,
+            });
+            if (submissionProfiles.length > 1) {
+                log_1.default.newLine();
+                const appPlatform = (0, AppPlatform_1.toAppPlatform)(submissionProfile.platform);
+                log_1.default.log(`${platform_1.appPlatformEmojis[appPlatform]} ${chalk_1.default.bold(`${platform_1.appPlatformDisplayNames[appPlatform]} submission`)}`);
+            }
+            const submission = await (0, submit_1.submitAsync)(ctx);
+            submissions.push(submission);
+        }
+        log_1.default.newLine();
+        (0, urls_1.printSubmissionDetailsUrls)(submissions);
+        if (flagsWithPlatform.wait) {
+            const completedSubmissions = await (0, submit_1.waitToCompleteAsync)(graphqlClient, submissions, {
+                verbose: flagsWithPlatform.verbose,
+            });
+            (0, submit_1.exitWithNonZeroCodeIfSomeSubmissionsDidntFinish)(completedSubmissions);
+        }
+    }
+    sanitizeFlags(flags) {
+        const { platform, verbose, wait, profile, 'non-interactive': nonInteractive, 'verbose-fastlane': isVerboseFastlaneEnabled, groups, 'what-to-test': whatToTest, ...archiveFlags } = flags;
+        if (!flags.platform && nonInteractive) {
+            core_1.Errors.error('--platform is required when building in non-interactive mode', { exit: 1 });
+        }
+        const requestedPlatform = flags.platform &&
+            Object.values(platform_1.RequestedPlatform).includes(flags.platform.toLowerCase())
+            ? flags.platform.toLowerCase()
+            : undefined;
+        return {
+            archiveFlags,
+            requestedPlatform,
+            verbose,
+            wait,
+            profile,
+            nonInteractive,
+            whatToTest,
+            isVerboseFastlaneEnabled,
+            groups,
+        };
+    }
+    async ensurePlatformSelectedAsync(flags) {
+        const requestedPlatform = await (0, platform_1.selectRequestedPlatformAsync)(flags.requestedPlatform);
+        if (requestedPlatform === platform_1.RequestedPlatform.All) {
+            if (flags.archiveFlags.id || flags.archiveFlags.path || flags.archiveFlags.url) {
+                core_1.Errors.error('--id, --path, and --url params are only supported when performing a single-platform submit', { exit: 1 });
+            }
+        }
+        return {
+            ...flags,
+            requestedPlatform,
+        };
+    }
+}
+exports.default = Submit;

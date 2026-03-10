@@ -1,0 +1,14 @@
+import { Platform } from '@expo/eas-build-job';
+import AndroidSubmitter from './AndroidSubmitter';
+import { SubmissionContext } from '../context';
+export default class AndroidSubmitCommand {
+    private ctx;
+    constructor(ctx: SubmissionContext<Platform.ANDROID>);
+    runAsync(): Promise<AndroidSubmitter>;
+    private getAndroidSubmissionOptionsAsync;
+    private maybeGetAndroidPackageFromCurrentProjectAsync;
+    private resolveReleaseStatus;
+    private resolveRollout;
+    private resolveArchiveSource;
+    private resolveServiceAccountSourceAsync;
+}

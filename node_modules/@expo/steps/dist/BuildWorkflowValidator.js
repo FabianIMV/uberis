@@ -1,0 +1,127 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.BuildWorkflowValidator = void 0;
+const fs_extra_1 = __importDefault(require("fs-extra"));
+const path_1 = __importDefault(require("path"));
+const BuildStepInput_1 = require("./BuildStepInput");
+const errors_1 = require("./errors");
+const duplicates_1 = require("./utils/expodash/duplicates");
+const nullthrows_1 = require("./utils/nullthrows");
+const template_1 = require("./utils/template");
+class BuildWorkflowValidator {
+    workflow;
+    constructor(workflow) {
+        this.workflow = workflow;
+    }
+    async validateAsync() {
+        const errors = [];
+        errors.push(...this.validateUniqueStepIds());
+        errors.push(...this.validateInputs());
+        errors.push(...this.validateAllowedPlatforms());
+        errors.push(...(await this.validateCustomFunctionModulesAsync()));
+        if (errors.length !== 0) {
+            throw new errors_1.BuildWorkflowError('Build workflow is invalid.', errors);
+        }
+    }
+    validateUniqueStepIds() {
+        const stepIds = this.workflow.buildSteps.map(({ id }) => id);
+        const duplicatedStepIds = (0, duplicates_1.duplicates)(stepIds);
+        if (duplicatedStepIds.length === 0) {
+            return [];
+        }
+        else {
+            const error = new errors_1.BuildConfigError(`Duplicated step IDs: ${duplicatedStepIds.map(i => `"${i}"`).join(', ')}`);
+            return [error];
+        }
+    }
+    validateInputs() {
+        const errors = [];
+        const allStepIds = new Set(this.workflow.buildSteps.map(s => s.id));
+        const visitedStepByStepId = {};
+        for (const currentStep of this.workflow.buildSteps) {
+            for (const currentStepInput of currentStep.inputs ?? []) {
+                if (currentStepInput.required && currentStepInput.rawValue === undefined) {
+                    const error = new errors_1.BuildConfigError(`Input parameter "${currentStepInput.id}" for step "${currentStep.displayName}" is required but it was not set.`);
+                    errors.push(error);
+                }
+                const currentType = typeof currentStepInput.rawValue === 'object'
+                    ? BuildStepInput_1.BuildStepInputValueTypeName.JSON
+                    : typeof currentStepInput.rawValue;
+                if (currentStepInput.rawValue !== undefined &&
+                    !currentStepInput.isRawValueStepOrContextReference() &&
+                    currentType !== currentStepInput.allowedValueTypeName) {
+                    const error = new errors_1.BuildConfigError(`Input parameter "${currentStepInput.id}" for step "${currentStep.displayName}" is set to "${typeof currentStepInput.rawValue === 'object'
+                        ? JSON.stringify(currentStepInput.rawValue)
+                        : currentStepInput.rawValue}" which is not of type "${currentStepInput.allowedValueTypeName}" or is not step or context reference.`);
+                    errors.push(error);
+                }
+                if (currentStepInput.defaultValue === undefined) {
+                    continue;
+                }
+                if (!currentStepInput.isRawValueOneOfAllowedValues()) {
+                    const error = new errors_1.BuildConfigError(`Input parameter "${currentStepInput.id}" for step "${currentStep.displayName}" is set to "${currentStepInput.rawValue}" which is not one of the allowed values: ${(0, nullthrows_1.nullthrows)(currentStepInput.allowedValues)
+                        .map(i => `"${i}"`)
+                        .join(', ')}.`);
+                    errors.push(error);
+                }
+                const paths = typeof currentStepInput.defaultValue === 'string'
+                    ? (0, template_1.findOutputPaths)(currentStepInput.defaultValue)
+                    : [];
+                for (const { stepId: referencedStepId, outputId: referencedStepOutputId } of paths) {
+                    if (!(referencedStepId in visitedStepByStepId)) {
+                        if (allStepIds.has(referencedStepId)) {
+                            const error = new errors_1.BuildConfigError(`Input parameter "${currentStepInput.id}" for step "${currentStep.displayName}" uses an expression that references an output parameter from the future step "${referencedStepId}".`);
+                            errors.push(error);
+                        }
+                        else {
+                            const error = new errors_1.BuildConfigError(`Input parameter "${currentStepInput.id}" for step "${currentStep.displayName}" uses an expression that references an output parameter from a non-existent step "${referencedStepId}".`);
+                            errors.push(error);
+                        }
+                    }
+                    else {
+                        if (!visitedStepByStepId[referencedStepId].hasOutputParameter(referencedStepOutputId)) {
+                            const error = new errors_1.BuildConfigError(`Input parameter "${currentStepInput.id}" for step "${currentStep.displayName}" uses an expression that references an undefined output parameter "${referencedStepOutputId}" from step "${referencedStepId}".`);
+                            errors.push(error);
+                        }
+                    }
+                }
+            }
+            visitedStepByStepId[currentStep.id] = currentStep;
+        }
+        return errors;
+    }
+    validateAllowedPlatforms() {
+        const errors = [];
+        for (const step of this.workflow.buildSteps) {
+            if (!step.canBeRunOnRuntimePlatform()) {
+                const error = new errors_1.BuildConfigError(`Step "${step.displayName}" is not allowed on platform "${step.ctx.global.runtimePlatform}". Allowed platforms for this step are: ${(0, nullthrows_1.nullthrows)(step.supportedRuntimePlatforms, `step.supportedRuntimePlatforms can't be falsy if canBeRunOnRuntimePlatform() is false`)
+                    .map(p => `"${p}"`)
+                    .join(', ')}.`);
+                errors.push(error);
+            }
+        }
+        return errors;
+    }
+    async validateCustomFunctionModulesAsync() {
+        const errors = [];
+        for (const buildFunction of Object.values(this.workflow.buildFunctions)) {
+            if (!buildFunction.customFunctionModulePath) {
+                continue;
+            }
+            if (!(await fs_extra_1.default.exists(buildFunction.customFunctionModulePath))) {
+                const error = new errors_1.BuildConfigError(`Custom function module path "${buildFunction.customFunctionModulePath}" for function "${buildFunction.id}" does not exist.`);
+                errors.push(error);
+                continue;
+            }
+            if (!(await fs_extra_1.default.exists(path_1.default.join(buildFunction.customFunctionModulePath, 'package.json')))) {
+                const error = new errors_1.BuildConfigError(`Custom function module path "${buildFunction.customFunctionModulePath}" for function "${buildFunction.id}" does not contain a package.json file.`);
+                errors.push(error);
+            }
+        }
+        return errors;
+    }
+}
+exports.BuildWorkflowValidator = BuildWorkflowValidator;

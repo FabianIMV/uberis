@@ -1,0 +1,40 @@
+{
+  "name": "@expo/multipart-body-parser",
+  "version": "2.0.0",
+  "description": "Utility to parse a multpart body into a more usable type.",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "files": [
+    "build"
+  ],
+  "scripts": {
+    "lint": "eslint src",
+    "clean": "rm -rf build",
+    "format": "prettier --write src",
+    "prepare": "rm -rf build && tsc",
+    "test": "jest"
+  },
+  "eslintConfig": {
+    "root": true,
+    "extends": "universe/node"
+  },
+  "author": "Expo <support@expo.dev>",
+  "license": "MIT",
+  "jest": {
+    "preset": "ts-jest",
+    "rootDir": "src"
+  },
+  "devDependencies": {
+    "@types/jest": "^27.4.0",
+    "eslint": "^8.57.1",
+    "eslint-config-universe": "^14.0.0",
+    "form-data": "^4.0.0",
+    "jest": "^27.4.7",
+    "prettier": "^3.3.3",
+    "ts-jest": "^27.1.4",
+    "typescript": "^4.6.3"
+  },
+  "dependencies": {
+    "multipasta": "^0.2.5"
+  }
+}

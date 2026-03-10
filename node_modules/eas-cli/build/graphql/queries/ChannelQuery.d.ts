@@ -1,0 +1,14 @@
+import { ExpoGraphqlClient } from '../../commandUtils/context/contextUtils/createGraphqlClient';
+import { UpdateBranchBasicInfoFragment, UpdateFragment, ViewUpdateChannelBasicInfoOnAppQuery, ViewUpdateChannelBasicInfoOnAppQueryVariables, ViewUpdateChannelOnAppQuery, ViewUpdateChannelOnAppQueryVariables, ViewUpdateChannelsOnAppQuery, ViewUpdateChannelsOnAppQueryVariables, ViewUpdateChannelsPaginatedOnAppQuery, ViewUpdateChannelsPaginatedOnAppQueryVariables } from '../generated';
+type ViewUpdateChannelsOnAppObject = NonNullable<ViewUpdateChannelsOnAppQuery['app']['byId']['updateChannels']>[number];
+type UpdateChannelByNameObject = NonNullable<ViewUpdateChannelOnAppQuery['app']['byId']['updateChannelByName']>;
+export type UpdateChannelObject = ViewUpdateChannelsOnAppObject & UpdateChannelByNameObject;
+export type UpdateBranchObject = UpdateChannelObject['updateBranches'][number];
+export declare function composeUpdateBranchObject(branchInfo: UpdateBranchBasicInfoFragment, updateGroups: UpdateFragment[][]): UpdateBranchObject;
+export declare const ChannelQuery: {
+    viewUpdateChannelBasicInfoAsync(graphqlClient: ExpoGraphqlClient, { appId, channelName }: ViewUpdateChannelBasicInfoOnAppQueryVariables): Promise<NonNullable<ViewUpdateChannelBasicInfoOnAppQuery["app"]["byId"]["updateChannelByName"]>>;
+    viewUpdateChannelAsync(graphqlClient: ExpoGraphqlClient, { appId, channelName, filter }: ViewUpdateChannelOnAppQueryVariables): Promise<UpdateChannelByNameObject>;
+    viewUpdateChannelsOnAppAsync(graphqlClient: ExpoGraphqlClient, { appId, limit, offset }: ViewUpdateChannelsOnAppQueryVariables): Promise<UpdateChannelObject[]>;
+    viewUpdateChannelsBasicInfoPaginatedOnAppAsync(graphqlClient: ExpoGraphqlClient, { appId, first, after, last, before }: ViewUpdateChannelsPaginatedOnAppQueryVariables): Promise<ViewUpdateChannelsPaginatedOnAppQuery["app"]["byId"]["channelsPaginated"]>;
+};
+export {};

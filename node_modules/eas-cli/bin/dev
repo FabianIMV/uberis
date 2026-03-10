@@ -1,0 +1,10 @@
+#!/usr/bin/env node
+
+(async () => {
+  const oclif = require('@oclif/core');
+
+  // Keep dev entrypoint failures verbose for local debugging.
+  oclif.settings.debug = true;
+
+  await oclif.execute({ development: true, dir: __dirname });
+})();

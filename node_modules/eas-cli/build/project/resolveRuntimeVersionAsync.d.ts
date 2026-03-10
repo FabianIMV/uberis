@@ -1,0 +1,31 @@
+import { ExpoConfig } from '@expo/config';
+import { Env, Workflow } from '@expo/eas-build-job';
+export declare function resolveRuntimeVersionUsingCLIAsync({ platform, workflow, projectDir, env, cwd, }: {
+    platform: 'ios' | 'android';
+    workflow: Workflow;
+    projectDir: string;
+    env: Env | undefined;
+    cwd?: string;
+}): Promise<{
+    runtimeVersion: string | null;
+    expoUpdatesRuntimeFingerprint: {
+        fingerprintSources: object[];
+        isDebugFingerprintSource: boolean;
+    } | null;
+    expoUpdatesRuntimeFingerprintHash: string | null;
+}>;
+export declare function resolveRuntimeVersionAsync({ exp, platform, workflow, projectDir, env, cwd, }: {
+    exp: ExpoConfig;
+    platform: 'ios' | 'android';
+    workflow: Workflow;
+    projectDir: string;
+    env: Env | undefined;
+    cwd?: string;
+}): Promise<{
+    runtimeVersion: string | null;
+    expoUpdatesRuntimeFingerprint: {
+        fingerprintSources: object[];
+        isDebugFingerprintSource: boolean;
+    } | null;
+    expoUpdatesRuntimeFingerprintHash: string | null;
+} | null>;
