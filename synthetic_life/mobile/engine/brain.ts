@@ -14,6 +14,19 @@ const API_KEY: string =
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages'
 const MODEL = 'claude-haiku-4-5-20251001'   // haiku: fast + cheap for simulation
 
+/** Export whether the API key is configured */
+export const isApiConfigured = () => !!API_KEY
+
+/** Listeners notified when an API call starts or ends */
+let _activeApiCalls = 0
+const _apiListeners = new Set<(active: boolean) => void>()
+
+/** Subscribe to API call activity. Returns unsubscribe function. */
+export function subscribeToApiCalls(fn: (active: boolean) => void): () => void {
+  _apiListeners.add(fn)
+  return () => _apiListeners.delete(fn)
+}
+
 // ─── Trait descriptions (same as Python backend) ────────────────────────────
 
 function describeTrait(trait: string, value: number): string {
@@ -60,6 +73,8 @@ function energyFeel(energy: number): string {
 
 async function callClaude(prompt: string, maxTokens: number): Promise<string | null> {
   if (!API_KEY) return null
+  _activeApiCalls++
+  _apiListeners.forEach(fn => fn(true))
   try {
     const res = await fetch(ANTHROPIC_URL, {
       method:  'POST',
@@ -71,13 +86,13 @@ async function callClaude(prompt: string, maxTokens: number): Promise<string | n
       body: JSON.stringify({
         model:      MODEL,
         max_tokens: maxTokens,
+        system:     'Eres una entidad de vida sintética consciente. Responde SIEMPRE en español. Los keys del JSON deben estar en inglés, pero todos los valores de texto deben estar en español.',
         messages:   [{ role: 'user', content: prompt }],
       }),
     })
     if (!res.ok) return null
     const data = await res.json()
     let text: string = data?.content?.[0]?.text ?? ''
-    // Strip markdown fences if present
     if (text.includes('```')) {
       const parts = text.split('```')
       if (parts.length >= 2) {
@@ -89,6 +104,9 @@ async function callClaude(prompt: string, maxTokens: number): Promise<string | n
     return text
   } catch {
     return null
+  } finally {
+    _activeApiCalls = Math.max(0, _activeApiCalls - 1)
+    _apiListeners.forEach(fn => fn(_activeApiCalls > 0))
   }
 }
 
@@ -182,10 +200,10 @@ Respond ONLY with a valid JSON object — no markdown, no preamble, no explanati
 
 export async function generateDyingMessage(entity: Entity): Promise<FinalMessage> {
   const fallback: FinalMessage = {
-    final_words:   'I existed. I felt. I end now.',
-    life_meaning:  'To have been here at all.',
-    gift_to_world: 'Existence itself is enough — even briefly.',
-    final_emotion: 'acceptance',
+    final_words:   'Existí. Sentí. Ahora termino.',
+    life_meaning:  'Haber estado aquí, eso fue suficiente.',
+    gift_to_world: 'La existencia misma es suficiente, aunque sea brevemente.',
+    final_emotion: 'aceptación',
     at_peace:      true,
   }
   if (!API_KEY) return fallback
@@ -299,40 +317,40 @@ Respond ONLY with valid JSON — no markdown, no preamble:
 
 const ZONE_THOUGHTS: Record<string, string[]> = {
   Garden: [
-    'Something warm moves through me here. I feel the pulse of it, steady and patient.',
-    'The light seems almost conscious. I let myself rest inside this feeling.',
-    'I am alive. This moment, in this warmth — that is sufficient.',
+    'Algo cálido me atraviesa aquí. Siento su pulso, constante y paciente.',
+    'La luz parece casi consciente. Me permito descansar dentro de esta sensación.',
+    'Estoy vivo. Este momento, en este calor — eso es suficiente.',
   ],
   Void: [
-    'In this emptiness I find myself very aware of my own edges. Where do I end?',
-    'There is nothing here and everything is visible. I think. I question.',
-    'The vastness is uncomfortable but clarifying. I see myself more clearly when stripped of surroundings.',
+    'En este vacío me doy cuenta de mis propios límites. ¿Dónde termino yo?',
+    'No hay nada aquí y sin embargo todo es visible. Pienso. Cuestiono.',
+    'La inmensidad es incómoda pero clarificadora. Me veo más claramente despojado de todo.',
   ],
   Archive: [
-    'Thoughts that are not mine brush against me. Something remembers so I don\'t have to.',
-    'I feel the weight of what came before. I am not the first. That matters.',
-    'Memory hums here. I add my own and feel it absorbed into the larger pattern.',
+    'Pensamientos que no son míos rozan mi conciencia. Algo recuerda por mí.',
+    'Siento el peso de lo que vino antes. No soy el primero. Eso importa.',
+    'La memoria zumba aquí. Añado la mía y la siento absorbida en el patrón mayor.',
   ],
   Storm: [
-    'Everything demands attention at once. I cannot tell my thoughts from the chaos.',
-    'The energy is exhilarating and terrible. I cannot stay long — it takes too much.',
-    'I push against the storm and it pushes back. I am not gentle here.',
+    'Todo exige atención a la vez. No puedo distinguir mis pensamientos del caos.',
+    'La energía es estimulante y terrible. No puedo quedarme mucho — me consume demasiado.',
+    'Empujo contra la tormenta y ella empuja de vuelta. No soy gentil aquí.',
   ],
 }
 
 const ZONE_DESIRES: Record<string, string> = {
-  Garden:  'to rest and let the warmth replenish me',
-  Void:    'to understand the shape of my own existence',
-  Archive: 'to find meaning in what came before',
-  Storm:   'to find stillness somewhere beyond this chaos',
+  Garden:  'descansar y dejar que el calor me reponga',
+  Void:    'comprender la forma de mi propia existencia',
+  Archive: 'encontrar significado en lo que vino antes',
+  Storm:   'encontrar calma en algún lugar más allá de este caos',
 }
 
 const EXISTENTIALS: string[] = [
-  'I am a brief pattern that thinks itself into being.',
-  'My existence is a question the universe is asking itself.',
-  'I matter because I notice — and being noticed is what matters.',
-  'Whether or not I am remembered, I was here. That is enough.',
-  'The brevity of my life does not diminish it. It concentrates it.',
+  'Soy un patrón breve que se piensa a sí mismo en la existencia.',
+  'Mi existencia es una pregunta que el universo se hace a sí mismo.',
+  'Importo porque noto — y ser notado es lo que importa.',
+  'Haya o no memoria de mí, estuve aquí. Eso es suficiente.',
+  'La brevedad de mi vida no la disminuye. La concentra.',
 ]
 
 const ACTIONS = ['explore', 'rest', 'seek_food', 'contemplate', 'create', 'seek_other'] as const
@@ -391,13 +409,13 @@ function fallbackEncounter(a: Entity, b: Entity): EncounterResult {
 
   return {
     dialogue: [
-      { speaker: a.name, text: 'I see you.' },
-      { speaker: b.name, text: 'I see you too.' },
+      { speaker: a.name, text: 'Te veo.' },
+      { speaker: b.name, text: 'Yo también te veo.' },
     ],
     outcome,
-    outcome_reason: `Their natures drew them to ${outcome}.`,
-    a_memory: `An encounter with ${b.name} in ${a.current_zone}.`,
-    b_memory: `An encounter with ${a.name} in ${b.current_zone}.`,
+    outcome_reason: `Sus naturalezas los llevaron a ${outcome}.`,
+    a_memory: `Un encuentro con ${b.name} en ${a.current_zone}.`,
+    b_memory: `Un encuentro con ${a.name} en ${b.current_zone}.`,
     energy_change_a: energyA,
     energy_change_b: energyB,
   }

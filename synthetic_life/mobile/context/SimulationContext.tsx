@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { simulation, type SimState } from '../engine/simulation'
+import { subscribeToApiCalls, isApiConfigured } from '../engine/brain'
 import type { Entity, ConsciousnessLog, LiveEvent, WorldState } from '../engine/types'
 
 // ─── Context shape ──────────────────────────────────────────────────────────
@@ -11,6 +12,8 @@ interface SimContextValue {
   liveEvents: LiveEvent[]
   logs:       Record<number, ConsciousnessLog[]>
   connected:  true                         // always true — no network needed
+  isThinking: boolean                      // true while Claude API call is in progress
+  apiEnabled: boolean                      // true if API key is configured
   feedEntity: (id: number) => void
 }
 
@@ -20,13 +23,13 @@ const SimContext = createContext<SimContextValue | null>(null)
 
 export function SimulationProvider({ children }: { children: React.ReactNode }) {
   const [simState, setSimState] = useState<SimState>(simulation.getState())
+  const [isThinking, setIsThinking] = useState(false)
   const startedRef = useRef(false)
 
   useEffect(() => {
-    // Subscribe to updates
-    const unsub = simulation.subscribe(setSimState)
+    const unsub    = simulation.subscribe(setSimState)
+    const unsubApi = subscribeToApiCalls(setIsThinking)
 
-    // Start once
     if (!startedRef.current) {
       startedRef.current = true
       simulation.start()
@@ -34,7 +37,7 @@ export function SimulationProvider({ children }: { children: React.ReactNode }) 
 
     return () => {
       unsub()
-      // Don't stop on unmount — simulation keeps running while app is open
+      unsubApi()
     }
   }, [])
 
@@ -45,6 +48,8 @@ export function SimulationProvider({ children }: { children: React.ReactNode }) 
     liveEvents: simState.liveEvents,
     logs:       simState.logs,
     connected:  true,
+    isThinking,
+    apiEnabled: isApiConfigured(),
     feedEntity: (id) => simulation.feedEntity(id),
   }
 
