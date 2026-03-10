@@ -7,7 +7,7 @@ export default ({ config }) => ({
     // EAS Secret: eas secret:create --name ANTHROPIC_API_KEY --value sk-ant-...
     // Falls back to the value in app.json → extra.anthropicApiKey (local dev)
     anthropicApiKey:
-      process.env.ANTHROPIC_API_KEY ?? config.extra?.anthropicApiKey ?? '',
+      process.env.ANTHROPIC_API_KEY ?? process.env.temporal ?? config.extra?.anthropicApiKey ?? '',
     eas: {
       projectId: process.env.EAS_PROJECT_ID ?? config.extra?.eas?.projectId ?? '',
     },
