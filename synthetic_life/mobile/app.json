@@ -40,7 +40,7 @@
       "policy": "appVersion"
     },
     "extra": {
-      "apiUrl": "http://YOUR-BACKEND-IP:8000",
+      "anthropicApiKey": "YOUR-ANTHROPIC-API-KEY",
       "eas": {
         "projectId": "YOUR-PROJECT-ID"
       }

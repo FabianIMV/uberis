@@ -1,7 +1,6 @@
 import { useLocalSearchParams, useNavigation } from 'expo-router'
 import { useEffect } from 'react'
 import {
-  ActivityIndicator,
   Alert,
   Pressable,
   ScrollView,
@@ -11,33 +10,27 @@ import {
 } from 'react-native'
 import EnergyBar from '../../components/EnergyBar'
 import GenomeBar from '../../components/GenomeBar'
-import { API_URL } from '../../constants/api'
+import { useEntityById, useEntityLogs, useSimulation } from '../../context/SimulationContext'
 import { COLORS, emotionColor } from '../../constants/theme'
-import { useEntityDetail } from '../../hooks/useEntityDetail'
 
 export default function EntityDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>()
   const numId = id ? parseInt(id, 10) : null
-  const { entity, logs, loading } = useEntityDetail(numId)
+  const entity = useEntityById(numId)
+  const logs   = useEntityLogs(numId)
+  const { feedEntity } = useSimulation()
   const navigation = useNavigation()
 
   useEffect(() => {
     if (entity?.name) navigation.setOptions({ title: entity.name })
   }, [entity?.name, navigation])
 
-  const feed = async () => {
-    if (!numId) return
-    await fetch(`${API_URL}/entities/${numId}/feed`, { method: 'POST' })
-    Alert.alert('Fed', `${entity?.name} received energy.`)
+  const feed = () => {
+    if (!numId || !entity?.is_alive) return
+    feedEntity(numId)
+    Alert.alert('Fed', `${entity?.name} received 25 energy.`)
   }
 
-  if (loading) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator color="#22d3ee" />
-      </View>
-    )
-  }
   if (!entity) {
     return (
       <View style={styles.center}>
@@ -95,7 +88,7 @@ export default function EntityDetailScreen() {
       {entity.last_thought && (
         <>
           <Text style={styles.sectionTitle}>Current Thought</Text>
-          <View style={[styles.card, styles.quoteCard]}>
+          <View style={[styles.card, { borderLeftWidth: 3, borderLeftColor: '#22d3ee' }]}>
             <Text style={styles.quoteText}>{entity.last_thought}</Text>
           </View>
         </>
@@ -231,7 +224,6 @@ const styles = StyleSheet.create({
 
   sectionTitle: { fontSize: 11, fontWeight: '700', color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8, marginTop: 4 },
 
-  quoteCard: { borderLeftWidth: 3, borderLeftColor: '#22d3ee' },
   quoteText: { fontSize: 13, color: COLORS.text, fontStyle: 'italic', lineHeight: 20 },
   desireText:{ fontSize: 13, color: '#fde68a', lineHeight: 20 },
   existText: { fontSize: 13, color: '#ddd6fe', fontStyle: 'italic', lineHeight: 20 },
