@@ -60,9 +60,9 @@ export const ZONE_COLOR: Record<string, string> = {
 }
 
 export const TRAIT_LABEL: Record<string, string> = {
-  curiosity:      'Curiosity',
-  empathy:        'Empathy',
-  aggression:     'Aggression',
-  creativity:     'Creativity',
-  survival_drive: 'Survival Drive',
+  curiosity:      'Curiosidad',
+  empathy:        'Empatía',
+  aggression:     'Agresión',
+  creativity:     'Creatividad',
+  survival_drive: 'Impulso vital',
 }

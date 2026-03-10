@@ -18,24 +18,24 @@ export default function StatsScreen() {
   if (!stats) {
     return (
       <View style={styles.loading}>
-        <Text style={styles.loadingText}>Simulation starting…</Text>
+        <Text style={styles.loadingText}>Simulación iniciando…</Text>
       </View>
     )
   }
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.section}>Population</Text>
+      <Text style={styles.section}>Población</Text>
       <View style={styles.statGrid}>
-        <StatCard label="Alive"    value={stats.living_count}                        color="#22c55e" />
-        <StatCard label="Total"    value={stats.total_entities}                       color="#94a3b8" />
-        <StatCard label="Max Gen"  value={stats.max_generation}                       color="#a78bfa" />
-        <StatCard label="Deceased" value={stats.total_entities - stats.living_count}  color="#ef4444" />
+        <StatCard label="Vivos"      value={stats.living_count}                        color="#22c55e" />
+        <StatCard label="Total"      value={stats.total_entities}                       color="#94a3b8" />
+        <StatCard label="Gen Máx"    value={stats.max_generation}                       color="#a78bfa" />
+        <StatCard label="Fallecidos" value={stats.total_entities - stats.living_count}  color="#ef4444" />
       </View>
 
       {Object.keys(stats.avg_traits).length > 0 && (
         <>
-          <Text style={styles.section}>Average Genome</Text>
+          <Text style={styles.section}>Genoma Promedio</Text>
           <View style={styles.card}>
             {Object.entries(stats.avg_traits).map(([trait, val]) => (
               <GenomeBar key={trait} trait={trait} value={val} />
@@ -46,7 +46,7 @@ export default function StatsScreen() {
 
       {Object.keys(stats.zone_distribution).length > 0 && (
         <>
-          <Text style={styles.section}>Zone Distribution</Text>
+          <Text style={styles.section}>Distribución por Zona</Text>
           <View style={styles.card}>
             {Object.entries(stats.zone_distribution).map(([zone, count]) => {
               const color = ZONE_COLOR[zone] ?? '#94a3b8'
