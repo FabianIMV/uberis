@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-deep: #020b18;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-deep);
+  color: #e2e8f0;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  overflow-x: hidden;
+}
+
+/* Bioluminescent glow effect for entity nodes */
+@keyframes bioluminescent {
+  0%   { filter: brightness(1) blur(0px); }
+  50%  { filter: brightness(1.4) blur(1px); }
+  100% { filter: brightness(1) blur(0px); }
+}
+
+@keyframes entity-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50%       { transform: scale(1.12); opacity: 1; }
+}
+
+@keyframes thought-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ticker-scroll {
+  0%   { transform: translateX(100%); }
+  100% { transform: translateX(-100%); }
+}
+
+.entity-node {
+  animation: entity-pulse 3s ease-in-out infinite, bioluminescent 4s ease-in-out infinite;
+}
+
+.thought-entry {
+  animation: thought-fade-in 0.4s ease-out forwards;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #040f1e;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e3a5f;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2563eb;
+}
+
+/* Zone quadrant backgrounds */
+.zone-garden  { background: radial-gradient(ellipse at center, #052e16 0%, #020b18 80%); }
+.zone-void    { background: radial-gradient(ellipse at center, #1e1b4b 0%, #020b18 80%); }
+.zone-archive { background: radial-gradient(ellipse at center, #422006 0%, #020b18 80%); }
+.zone-storm   { background: radial-gradient(ellipse at center, #450a0a 0%, #020b18 80%); }
+
+.genome-bar-fill {
+  transition: width 0.8s ease-in-out;
+}
+
+/* Lineage tree lines */
+.lineage-connector {
+  stroke: #1e3a5f;
+  stroke-width: 1.5;
+  fill: none;
+}
