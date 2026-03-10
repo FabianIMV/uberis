@@ -3,6 +3,8 @@
     "name": "Synthetic Life",
     "slug": "uberis",
     "version": "1.0.0",
+    "platforms": ["ios"],
+    "newArchEnabled": true,
     "orientation": "portrait",
     "scheme": "synthetic-life",
     "userInterfaceStyle": "dark",
