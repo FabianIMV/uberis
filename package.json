@@ -1,5 +1,7 @@
 {
   "dependencies": {
-    "eas-cli": "^18.3.0"
+    "eas-cli": "^18.3.0",
+    "expo": "^55.0.5",
+    "expo-updates": "~55.0.12"
   }
 }

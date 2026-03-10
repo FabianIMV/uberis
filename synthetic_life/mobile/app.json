@@ -4,45 +4,34 @@
     "slug": "synthetic-life",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
     "scheme": "synthetic-life",
     "userInterfaceStyle": "dark",
-    "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#020b18"
-    },
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.yourname.syntheticlife"
     },
     "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#020b18"
-      },
       "package": "com.yourname.syntheticlife"
     },
     "web": {
       "bundler": "metro",
-      "output": "static",
-      "favicon": "./assets/favicon.png"
+      "output": "static"
     },
     "plugins": ["expo-router"],
     "experiments": {
       "typedRoutes": true
     },
     "updates": {
-      "url": "https://u.expo.dev/YOUR-PROJECT-ID"
+      "url": "https://u.expo.dev/6af26cf3-193f-48c5-9b30-94fd99721d58"
     },
     "runtimeVersion": {
-      "policy": "appVersion"
+      "policy": "sdkVersion"
     },
     "extra": {
       "anthropicApiKey": "YOUR-ANTHROPIC-API-KEY",
       "eas": {
-        "projectId": "YOUR-PROJECT-ID"
+        "projectId": "6af26cf3-193f-48c5-9b30-94fd99721d58"
       }
     }
   }

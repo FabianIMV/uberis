@@ -14,7 +14,7 @@
     "production": {}
   },
   "update": {
-    "server": "https://u.expo.dev/YOUR-PROJECT-ID"
+    "server": "https://u.expo.dev/6af26cf3-193f-48c5-9b30-94fd99721d58"
   },
   "submit": {
     "production": {}
