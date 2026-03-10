@@ -1,4 +1,5 @@
-/* eslint-disable @typescript-eslint/ban-types */
+'use client';
+
 import type { TurboModule } from 'react-native';
 import { TurboModuleRegistry } from 'react-native';
 

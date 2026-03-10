@@ -1,5 +1,9 @@
 {
   "expo": {
+    "name": "Synthetic Life",
+    "slug": "uberis",
+    "version": "1.0.0",
+    "entryPoint": "./synthetic_life/mobile/index.js",
     "extra": {
       "eas": {
         "projectId": "6af26cf3-193f-48c5-9b30-94fd99721d58"

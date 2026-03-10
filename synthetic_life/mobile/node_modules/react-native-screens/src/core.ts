@@ -1,7 +1,6 @@
-import { Platform, UIManager } from 'react-native';
+'use client';
 
-// const that tells if the library should use new implementation, will be undefined for older versions
-export const shouldUseActivityState = true;
+import { Platform, UIManager } from 'react-native';
 
 export const isNativePlatformSupported =
   Platform.OS === 'ios' ||
@@ -19,7 +18,7 @@ export function enableScreens(shouldEnableScreens = true) {
 
   if (ENABLE_SCREENS && !UIManager.getViewManagerConfig('RNSScreen')) {
     console.error(
-      `Screen native module hasn't been linked. Please check the react-native-screens README for more details`
+      `Screen native module hasn't been linked. Please check the react-native-screens README for more details`,
     );
   }
 }

@@ -1,6 +1,11 @@
 import { Route, useTheme } from '@react-navigation/native';
 import * as React from 'react';
 import { Platform } from 'react-native';
+import { SearchBarProps } from '../../types';
+import {
+  isSearchBarAvailableForCurrentPlatform,
+  executeNativeBackPress,
+} from '../../utils';
 import {
   ScreenStackHeaderBackButtonImage,
   ScreenStackHeaderCenterView,
@@ -8,11 +13,8 @@ import {
   ScreenStackHeaderLeftView,
   ScreenStackHeaderRightView,
   ScreenStackHeaderSearchBarView,
-  SearchBar,
-  SearchBarProps,
-  isSearchBarAvailableForCurrentPlatform,
-  executeNativeBackPress,
-} from 'react-native-screens';
+} from '../../components/ScreenStackHeaderConfig';
+import SearchBar from '../../components/SearchBar';
 import { NativeStackNavigationOptions } from '../types';
 import { useBackPressSubscription } from '../utils/useBackPressSubscription';
 import { processFonts } from './FontProcessor';
@@ -27,6 +29,7 @@ export default function HeaderConfig({
   backButtonInCustomView,
   direction,
   disableBackButtonMenu,
+  backButtonDisplayMode = 'default',
   headerBackTitle,
   headerBackTitleStyle = {},
   headerBackTitleVisible = true,
@@ -103,7 +106,7 @@ export default function HeaderConfig({
   warnOnce(
     isVisionOS &&
       (headerTitleStyle.color !== undefined || headerTintColor !== undefined),
-    'headerTitleStyle.color and headerTintColor are not supported on visionOS.'
+    'headerTitleStyle.color and headerTintColor are not supported on visionOS.',
   );
 
   return (
@@ -120,6 +123,7 @@ export default function HeaderConfig({
       color={tintColor}
       direction={direction}
       disableBackButtonMenu={disableBackButtonMenu}
+      backButtonDisplayMode={backButtonDisplayMode}
       hidden={headerShown === false}
       hideBackButton={headerHideBackButton}
       hideShadow={headerHideShadow}
