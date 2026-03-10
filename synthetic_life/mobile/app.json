@@ -11,10 +11,7 @@
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.yourname.syntheticlife"
-    },
-    "android": {
-      "package": "com.yourname.syntheticlife"
+      "bundleIdentifier": "com.fabianimv.uberis"
     },
     "web": {
       "bundler": "metro",
