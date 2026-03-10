@@ -25,19 +25,19 @@ function eventText(ev: LiveEvent): string {
     }
     case 'entity_born':
     case 'birth':
-      return `${ev.name} born — gen ${ev.generation}${ev.parent_a ? ` from ${ev.parent_a}` : ''}`
+      return `${ev.name} nació — gen ${ev.generation}${ev.parent_a ? ` de ${ev.parent_a}` : ''}`
     case 'entity_died':
     case 'death':
-      return `${ev.name} ended — "${String(ev.final_words ?? ev.life_meaning ?? '').slice(0, 70)}"`
+      return `${ev.name} terminó — "${String(ev.final_words ?? ev.life_meaning ?? '').slice(0, 70)}"`
     case 'world_event':
       return String(ev.description ?? '').slice(0, 90)
     case 'encounter':
       return `${(ev.entity_a as {name:string})?.name} & ${(ev.entity_b as {name:string})?.name} → ${ev.outcome}`
     case 'entity_grief':
     case 'grief':
-      return `${ev.griever} grieves for ${ev.lost}`
+      return `${ev.griever} llora a ${ev.lost}`
     case 'entity_fed':
-      return `${ev.name} was fed`
+      return `${ev.name} fue alimentado`
     default:
       return ev.type
   }
@@ -60,7 +60,7 @@ export default function EventsFeed({ events }: { events: LiveEvent[] }) {
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       {events.length === 0 && (
-        <Text style={styles.empty}>Waiting for consciousness…</Text>
+        <Text style={styles.empty}>Esperando consciencia…</Text>
       )}
       {events.map(ev => {
         const icon  = EVENT_ICON[ev.type] ?? '·'

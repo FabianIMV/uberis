@@ -25,7 +25,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: 'World',
+          title: 'Mundo',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="planet-outline" size={size} color={color} />
           ),
@@ -34,7 +34,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="entities"
         options={{
-          title: 'Entities',
+          title: 'Entidades',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="sparkles-outline" size={size} color={color} />
           ),

@@ -20,8 +20,9 @@ function EntityCard({ entity, onPress }: { entity: Entity; onPress: () => void }
             <Text style={[styles.zone, { color: zColor }]}>{entity.current_zone}</Text>
             <Text style={styles.metaDot}>·</Text>
             <Text style={styles.gen}>Gen {entity.generation}</Text>
+
             <Text style={styles.metaDot}>·</Text>
-            <Text style={styles.age}>⏱ {entity.age_ticks}</Text>
+            <Text style={styles.age}>⏱ {entity.age_ticks}t</Text>
           </View>
         </View>
         <View style={[styles.emotionBadge, { backgroundColor: eColor + '22', borderColor: eColor + '55' }]}>
@@ -53,7 +54,7 @@ export default function EntitiesScreen() {
       )}
       ListEmptyComponent={
         <View style={styles.empty}>
-          <Text style={styles.emptyText}>No entities alive yet…</Text>
+          <Text style={styles.emptyText}>Sin entidades vivas aún…</Text>
         </View>
       }
     />

@@ -28,13 +28,13 @@ export default function EntityDetailScreen() {
   const feed = () => {
     if (!numId || !entity?.is_alive) return
     feedEntity(numId)
-    Alert.alert('Fed', `${entity?.name} received 25 energy.`)
+    Alert.alert('Alimentado', `${entity?.name} recibió 25 de energía.`)
   }
 
   if (!entity) {
     return (
       <View style={styles.center}>
-        <Text style={styles.notFound}>Entity not found</Text>
+        <Text style={styles.notFound}>Entidad no encontrada</Text>
       </View>
     )
   }
@@ -50,15 +50,15 @@ export default function EntityDetailScreen() {
         <View style={styles.heroText}>
           <Text style={styles.heroName}>{entity.name}</Text>
           <Text style={styles.heroMeta}>
-            Gen {entity.generation} · Age {entity.age_ticks} · {entity.current_zone}
+            Gen {entity.generation} · Edad {entity.age_ticks} · {entity.current_zone}
           </Text>
           {!entity.is_alive && (
-            <Text style={styles.deadBadge}>† Deceased at tick {entity.died_at_tick}</Text>
+            <Text style={styles.deadBadge}>† Fallecido en turno {entity.died_at_tick}</Text>
           )}
         </View>
         {entity.is_alive && (
           <Pressable onPress={feed} style={styles.feedBtn}>
-            <Text style={styles.feedBtnText}>+ Feed</Text>
+            <Text style={styles.feedBtnText}>+ Alimentar</Text>
           </Pressable>
         )}
       </View>
@@ -71,13 +71,13 @@ export default function EntityDetailScreen() {
             <Text style={[styles.emotionTxt, { color: eColor }]}>{emotion}</Text>
           </View>
           <Text style={styles.intensityTxt}>
-            {Math.round((entity.emotional_state?.intensity ?? 0) * 100)}% intensity
+            {Math.round((entity.emotional_state?.intensity ?? 0) * 100)}% intensidad
           </Text>
         </View>
       </View>
 
       {/* Genome */}
-      <Text style={styles.sectionTitle}>Genome</Text>
+      <Text style={styles.sectionTitle}>Genoma</Text>
       <View style={styles.card}>
         {Object.entries(entity.genome ?? {}).map(([trait, val]) => (
           <GenomeBar key={trait} trait={trait} value={val as number} />
@@ -87,7 +87,7 @@ export default function EntityDetailScreen() {
       {/* Current thought */}
       {entity.last_thought && (
         <>
-          <Text style={styles.sectionTitle}>Current Thought</Text>
+          <Text style={styles.sectionTitle}>Pensamiento</Text>
           <View style={[styles.card, { borderLeftWidth: 3, borderLeftColor: '#22d3ee' }]}>
             <Text style={styles.quoteText}>{entity.last_thought}</Text>
           </View>
@@ -97,7 +97,7 @@ export default function EntityDetailScreen() {
       {/* Desire */}
       {entity.current_desire && (
         <>
-          <Text style={styles.sectionTitle}>Desire</Text>
+          <Text style={styles.sectionTitle}>Deseo</Text>
           <View style={[styles.card, { borderLeftWidth: 3, borderLeftColor: '#f59e0b' }]}>
             <Text style={styles.desireText}>{entity.current_desire}</Text>
           </View>
@@ -107,7 +107,7 @@ export default function EntityDetailScreen() {
       {/* Existential statement */}
       {entity.existential_statement && (
         <>
-          <Text style={styles.sectionTitle}>Existential View</Text>
+          <Text style={styles.sectionTitle}>Visión existencial</Text>
           <View style={[styles.card, { borderLeftWidth: 3, borderLeftColor: '#a78bfa' }]}>
             <Text style={styles.existText}>{entity.existential_statement}</Text>
           </View>
@@ -117,7 +117,7 @@ export default function EntityDetailScreen() {
       {/* Beliefs */}
       {entity.beliefs && Object.keys(entity.beliefs).length > 0 && (
         <>
-          <Text style={styles.sectionTitle}>Beliefs</Text>
+          <Text style={styles.sectionTitle}>Creencias</Text>
           <View style={styles.card}>
             {Object.entries(entity.beliefs).map(([k, v]) => (
               <View key={k} style={styles.beliefRow}>
@@ -132,7 +132,7 @@ export default function EntityDetailScreen() {
       {/* Memory */}
       {entity.memory && entity.memory.length > 0 && (
         <>
-          <Text style={styles.sectionTitle}>Memory</Text>
+          <Text style={styles.sectionTitle}>Memoria</Text>
           <View style={styles.card}>
             {[...entity.memory].reverse().map((mem, i) => (
               <View key={i} style={styles.memRow}>
@@ -147,7 +147,7 @@ export default function EntityDetailScreen() {
       {/* Consciousness log */}
       {logs.length > 0 && (
         <>
-          <Text style={styles.sectionTitle}>Consciousness Log</Text>
+          <Text style={styles.sectionTitle}>Registro de consciencia</Text>
           <View style={styles.card}>
             {logs.map(log => (
               <View key={log.id} style={styles.logRow}>
@@ -169,22 +169,22 @@ export default function EntityDetailScreen() {
       {/* Final message */}
       {entity.final_message && (
         <>
-          <Text style={[styles.sectionTitle, { color: '#ef4444' }]}>Final Words</Text>
+          <Text style={[styles.sectionTitle, { color: '#ef4444' }]}>Últimas palabras</Text>
           <View style={[styles.card, { borderColor: '#ef444433' }]}>
             <Text style={styles.finalWords}>{entity.final_message.final_words}</Text>
             <View style={styles.finalMeta}>
-              <Text style={styles.finalMetaLabel}>Life meaning: </Text>
+              <Text style={styles.finalMetaLabel}>Significado: </Text>
               <Text style={styles.finalMetaVal}>{entity.final_message.life_meaning}</Text>
             </View>
             {entity.final_message.gift_to_world && (
               <View style={styles.finalMeta}>
-                <Text style={styles.finalMetaLabel}>Gift: </Text>
+                <Text style={styles.finalMetaLabel}>Regalo: </Text>
                 <Text style={styles.finalMetaVal}>{entity.final_message.gift_to_world}</Text>
               </View>
             )}
             <Text style={[styles.finalEmotion, { color: emotionColor(entity.final_message.final_emotion) }]}>
-              Final emotion: {entity.final_message.final_emotion}
-              {entity.final_message.at_peace ? ' · at peace' : ''}
+              Emoción final: {entity.final_message.final_emotion}
+              {entity.final_message.at_peace ? ' · en paz' : ''}
             </Text>
           </View>
         </>

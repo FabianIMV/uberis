@@ -9,10 +9,10 @@ export default function FeedScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Live Feed</Text>
+        <Text style={styles.title}>Feed en Vivo</Text>
         <View style={styles.statusRow}>
           <View style={styles.dot} />
-          <Text style={styles.status}>Local simulation</Text>
+          <Text style={styles.status}>Simulación local</Text>
         </View>
       </View>
       <EventsFeed events={liveEvents} />
