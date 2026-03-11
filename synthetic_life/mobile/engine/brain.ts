@@ -11,7 +11,6 @@ import type { Entity, ThoughtResult, FinalMessage } from './types'
 const API_KEY: string =
   (Constants.expoConfig?.extra?.anthropicApiKey as string | undefined) ?? ''
 
-console.log('[brain] API_KEY length:', API_KEY.length, '| starts:', API_KEY.slice(0, 10))
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages'
 const MODEL = 'claude-haiku-4-5-20251001'   // haiku: fast + cheap for simulation
