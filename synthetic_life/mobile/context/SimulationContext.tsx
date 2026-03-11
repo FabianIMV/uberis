@@ -1,20 +1,28 @@
-import { createContext, useContext, useEffect, useRef, useState } from 'react'
-import { simulation, type SimState } from '../engine/simulation'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { AppState } from 'react-native'
+import { simulation, type SimState, type CatchUpSummary } from '../engine/simulation'
 import { subscribeToApiCalls, isApiConfigured } from '../engine/brain'
 import type { Entity, ConsciousnessLog, LiveEvent, WorldState } from '../engine/types'
+import {
+  dbGetAllEntities, dbGetEntityThoughts, dbGetWorldTimeline,
+  dbGetEncounters, dbGetStats,
+  type EntityRecord,
+} from '../engine/database'
 
 // ─── Context shape ──────────────────────────────────────────────────────────
 
 interface SimContextValue {
-  entities:   Entity[]                     // living only
-  allEntities:Entity[]                     // living + dead (for detail views)
-  worldState: WorldState
-  liveEvents: LiveEvent[]
-  logs:       Record<number, ConsciousnessLog[]>
-  connected:  true                         // always true — no network needed
-  isThinking: boolean                      // true while Claude API call is in progress
-  apiEnabled: boolean                      // true if API key is configured
-  feedEntity: (id: number) => void
+  entities:           Entity[]
+  allEntities:        Entity[]
+  worldState:         WorldState
+  liveEvents:         LiveEvent[]
+  logs:               Record<number, ConsciousnessLog[]>
+  connected:          true
+  isThinking:         boolean
+  apiEnabled:         boolean
+  feedEntity:         (id: number) => void
+  awaySummary:        CatchUpSummary | null   // set when app re-opens after absence
+  dismissAwaySummary: () => void
 }
 
 const SimContext = createContext<SimContextValue | null>(null)
@@ -24,6 +32,7 @@ const SimContext = createContext<SimContextValue | null>(null)
 export function SimulationProvider({ children }: { children: React.ReactNode }) {
   const [simState, setSimState] = useState<SimState>(simulation.getState())
   const [isThinking, setIsThinking] = useState(false)
+  const [awaySummary, setAwaySummary] = useState<CatchUpSummary | null>(null)
   const startedRef = useRef(false)
 
   useEffect(() => {
@@ -32,25 +41,41 @@ export function SimulationProvider({ children }: { children: React.ReactNode }) 
 
     if (!startedRef.current) {
       startedRef.current = true
-      simulation.start()
+      simulation.start().then(() => {
+        const summary = simulation.getCatchUpSummary()
+        if (summary) {
+          setAwaySummary(summary)
+          simulation.clearCatchUpSummary()
+        }
+      })
     }
+
+    // Save world state whenever app goes to background
+    const appSub = AppState.addEventListener('change', appState => {
+      if (appState === 'background' || appState === 'inactive') {
+        simulation.save()
+      }
+    })
 
     return () => {
       unsub()
       unsubApi()
+      appSub.remove()
     }
   }, [])
 
   const value: SimContextValue = {
-    entities:   simState.entities.filter(e => e.is_alive),
-    allEntities:simState.entities,
-    worldState: simState.worldState,
-    liveEvents: simState.liveEvents,
-    logs:       simState.logs,
-    connected:  true,
+    entities:           simState.entities.filter(e => e.is_alive),
+    allEntities:        simState.entities,
+    worldState:         simState.worldState,
+    liveEvents:         simState.liveEvents,
+    logs:               simState.logs,
+    connected:          true,
     isThinking,
-    apiEnabled: isApiConfigured(),
-    feedEntity: (id) => simulation.feedEntity(id),
+    apiEnabled:         isApiConfigured(),
+    feedEntity:         (id) => simulation.feedEntity(id),
+    awaySummary,
+    dismissAwaySummary: () => setAwaySummary(null),
   }
 
   return (
@@ -81,6 +106,64 @@ export function useEntityLogs(id: number | null): ConsciousnessLog[] {
   if (!id) return []
   return (logs[id] ?? []).slice().reverse()   // newest first
 }
+
+// ─── DB-backed hooks ─────────────────────────────────────────────────────────
+
+/** Full thought history for an entity from SQLite (not capped at 20). */
+export function useFullEntityThoughts(id: number | null, limit = 100) {
+  const [thoughts, setThoughts] = useState<ConsciousnessLog[]>([])
+  useEffect(() => {
+    if (!id) { setThoughts([]); return }
+    dbGetEntityThoughts(id, limit).then(setThoughts).catch(() => {})
+  }, [id, limit])
+  const refresh = useCallback(() => {
+    if (!id) return
+    dbGetEntityThoughts(id, limit).then(setThoughts).catch(() => {})
+  }, [id, limit])
+  return { thoughts, refresh }
+}
+
+/** Genealogy tree — every entity ever born. */
+export function useGenealogyTree() {
+  const [tree, setTree] = useState<EntityRecord[]>([])
+  useEffect(() => { dbGetAllEntities().then(setTree).catch(() => {}) }, [])
+  const refresh = useCallback(() => { dbGetAllEntities().then(setTree).catch(() => {}) }, [])
+  return { tree, refresh }
+}
+
+/** World timeline from SQLite. */
+export function useWorldTimeline(limit = 200) {
+  const [events, setEvents] = useState<Array<{ id: number; tick: number; type: string; description: string | null; zone: string | null; data_json: string }>>([])
+  useEffect(() => { dbGetWorldTimeline(limit).then(setEvents).catch(() => {}) }, [limit])
+  const refresh = useCallback(() => { dbGetWorldTimeline(limit).then(setEvents).catch(() => {}) }, [limit])
+  return { events, refresh }
+}
+
+/** All-time encounter history. */
+export function useEncounterHistory(limit = 100) {
+  const [encounters, setEncounters] = useState<Array<{
+    id: number; tick: number;
+    entity_a_id: number; entity_b_id: number;
+    entity_a_name: string; entity_b_name: string;
+    outcome: string; dialogue: string | null; zone: string
+  }>>([])
+  useEffect(() => { dbGetEncounters(limit).then(setEncounters).catch(() => {}) }, [limit])
+  const refresh = useCallback(() => { dbGetEncounters(limit).then(setEncounters).catch(() => {}) }, [limit])
+  return { encounters, refresh }
+}
+
+/** Aggregate stats from the DB. */
+export function useDBStats() {
+  const [stats, setStats] = useState<{
+    total_entities: number; total_thoughts: number;
+    total_events: number; total_encounters: number; max_generation: number
+  } | null>(null)
+  useEffect(() => { dbGetStats().then(setStats).catch(() => {}) }, [])
+  const refresh = useCallback(() => { dbGetStats().then(setStats).catch(() => {}) }, [])
+  return { stats, refresh }
+}
+
+// ─── Stats derived from simulation state ─────────────────────────────────────
 
 /** Stats derived from simulation state — no extra fetch needed. */
 export function useSimStats() {
