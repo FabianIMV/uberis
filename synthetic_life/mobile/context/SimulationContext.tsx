@@ -1,8 +1,13 @@
-import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { AppState } from 'react-native'
 import { simulation, type SimState, type CatchUpSummary } from '../engine/simulation'
 import { subscribeToApiCalls, isApiConfigured } from '../engine/brain'
 import type { Entity, ConsciousnessLog, LiveEvent, WorldState } from '../engine/types'
+import {
+  dbGetAllEntities, dbGetEntityThoughts, dbGetWorldTimeline,
+  dbGetEncounters, dbGetStats,
+  type EntityRecord,
+} from '../engine/database'
 
 // ─── Context shape ──────────────────────────────────────────────────────────
 
@@ -101,6 +106,64 @@ export function useEntityLogs(id: number | null): ConsciousnessLog[] {
   if (!id) return []
   return (logs[id] ?? []).slice().reverse()   // newest first
 }
+
+// ─── DB-backed hooks ─────────────────────────────────────────────────────────
+
+/** Full thought history for an entity from SQLite (not capped at 20). */
+export function useFullEntityThoughts(id: number | null, limit = 100) {
+  const [thoughts, setThoughts] = useState<ConsciousnessLog[]>([])
+  useEffect(() => {
+    if (!id) { setThoughts([]); return }
+    dbGetEntityThoughts(id, limit).then(setThoughts).catch(() => {})
+  }, [id, limit])
+  const refresh = useCallback(() => {
+    if (!id) return
+    dbGetEntityThoughts(id, limit).then(setThoughts).catch(() => {})
+  }, [id, limit])
+  return { thoughts, refresh }
+}
+
+/** Genealogy tree — every entity ever born. */
+export function useGenealogyTree() {
+  const [tree, setTree] = useState<EntityRecord[]>([])
+  useEffect(() => { dbGetAllEntities().then(setTree).catch(() => {}) }, [])
+  const refresh = useCallback(() => { dbGetAllEntities().then(setTree).catch(() => {}) }, [])
+  return { tree, refresh }
+}
+
+/** World timeline from SQLite. */
+export function useWorldTimeline(limit = 200) {
+  const [events, setEvents] = useState<Array<{ id: number; tick: number; type: string; description: string | null; zone: string | null; data_json: string }>>([])
+  useEffect(() => { dbGetWorldTimeline(limit).then(setEvents).catch(() => {}) }, [limit])
+  const refresh = useCallback(() => { dbGetWorldTimeline(limit).then(setEvents).catch(() => {}) }, [limit])
+  return { events, refresh }
+}
+
+/** All-time encounter history. */
+export function useEncounterHistory(limit = 100) {
+  const [encounters, setEncounters] = useState<Array<{
+    id: number; tick: number;
+    entity_a_id: number; entity_b_id: number;
+    entity_a_name: string; entity_b_name: string;
+    outcome: string; dialogue: string | null; zone: string
+  }>>([])
+  useEffect(() => { dbGetEncounters(limit).then(setEncounters).catch(() => {}) }, [limit])
+  const refresh = useCallback(() => { dbGetEncounters(limit).then(setEncounters).catch(() => {}) }, [limit])
+  return { encounters, refresh }
+}
+
+/** Aggregate stats from the DB. */
+export function useDBStats() {
+  const [stats, setStats] = useState<{
+    total_entities: number; total_thoughts: number;
+    total_events: number; total_encounters: number; max_generation: number
+  } | null>(null)
+  useEffect(() => { dbGetStats().then(setStats).catch(() => {}) }, [])
+  const refresh = useCallback(() => { dbGetStats().then(setStats).catch(() => {}) }, [])
+  return { stats, refresh }
+}
+
+// ─── Stats derived from simulation state ─────────────────────────────────────
 
 /** Stats derived from simulation state — no extra fetch needed. */
 export function useSimStats() {

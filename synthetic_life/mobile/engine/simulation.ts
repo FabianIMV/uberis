@@ -13,6 +13,11 @@ import {
 } from './world'
 import { think, generateDyingMessage, generateEncounter } from './brain'
 import { persistState, loadPersistedState } from './persistence'
+import {
+  openDB,
+  dbInsertEntity, dbRecordDeath, dbInsertThought,
+  dbInsertWorldEvent, dbInsertEncounter,
+} from './database'
 import type {
   Entity, WorldState, LiveEvent, ConsciousnessLog, FinalMessage,
 } from './types'
@@ -82,6 +87,9 @@ export class Simulation {
     if (this.running) return
     this.running = true
 
+    // Open SQLite DB (non-blocking — don't fail if it errors)
+    openDB().catch(() => {})
+
     // Try to restore the world from the last session
     const saved = await loadPersistedState()
     if (saved) {
@@ -150,6 +158,7 @@ export class Simulation {
     }))
     this._setState({ entities })
     this._notify()
+    for (const e of entities) dbInsertEntity(e, 0).catch(() => {})
   }
 
   // ── Silent catch-up (no Claude, pure logic) ───────────────────────────────
@@ -294,12 +303,14 @@ export class Simulation {
     let worldEventTemplate: typeof WORLD_EVENTS[0] | null = null
     if (shouldFireWorldEvent()) {
       worldEventTemplate = getWeightedEvent()
-      this._pushEvent({
+      const wev = {
         type:        'world_event',
         description: worldEventTemplate.description,
         zone:        worldEventTemplate.zone,
         tick,
-      })
+      }
+      this._pushEvent(wev)
+      dbInsertWorldEvent({ ...wev, id: 0 }).catch(() => {})
     }
 
     // ── Process each entity in parallel ────────────────────────────────────
@@ -393,12 +404,15 @@ export class Simulation {
       e.final_message = msg
       e.died_at_tick  = tick
       ws.total_deaths += 1
-      this._appendLog({
+      const deathLog: ConsciousnessLog = {
         id: nextLogId(), entity_id: e.id, tick,
         thought: msg.final_words, action: 'die', action_target: null,
         emotion: msg.final_emotion, emotion_intensity: 1.0,
         timestamp: new Date().toISOString(),
-      })
+      }
+      this._appendLog(deathLog)
+      dbInsertThought(deathLog).catch(() => {})
+      dbRecordDeath(e, 'old_age').catch(() => {})
       this._pushEvent({
         type: 'entity_died', id: e.id, name: e.name,
         age_ticks: e.age_ticks, final_words: msg.final_words,
@@ -415,7 +429,7 @@ export class Simulation {
       e.final_message = msg
       e.died_at_tick  = tick
       ws.total_deaths += 1
-      this._appendLog({
+      const deathLog: ConsciousnessLog = {
         id:                nextLogId(),
         entity_id:         e.id,
         tick,
@@ -425,7 +439,10 @@ export class Simulation {
         emotion:           msg.final_emotion,
         emotion_intensity: 1.0,
         timestamp:         new Date().toISOString(),
-      })
+      }
+      this._appendLog(deathLog)
+      dbInsertThought(deathLog).catch(() => {})
+      dbRecordDeath(e, 'energy').catch(() => {})
       this._pushEvent({
         type:        'entity_died',
         id:          e.id,
@@ -470,7 +487,7 @@ export class Simulation {
 
         e.memory = [...e.memory, `Thought: ${e.last_thought?.slice(0, 110)}`].slice(-10)
 
-        this._appendLog({
+        const tLog: ConsciousnessLog = {
           id:                nextLogId(),
           entity_id:         e.id,
           tick,
@@ -480,7 +497,9 @@ export class Simulation {
           emotion:           t.emotion,
           emotion_intensity: t.emotion_intensity,
           timestamp:         new Date().toISOString(),
-        })
+        }
+        this._appendLog(tLog)
+        dbInsertThought(tLog).catch(() => {})
 
         this._pushEvent({
           type:                  'entity_thought',
@@ -550,6 +569,11 @@ export class Simulation {
         tick,
       })
 
+      dbInsertEncounter(
+        tick, a.id, a.name, b.id, b.name,
+        result.outcome, result.dialogue, zone,
+      ).catch(() => {})
+
       // Reproduction
       if (result.outcome === 'reproduction' && alive.length < MAX_POPULATION) {
         if (shouldReproduce(a, b)) {
@@ -597,6 +621,8 @@ export class Simulation {
       zone:       parentA.current_zone,
       tick,
     })
+
+    dbInsertEntity(child, tick).catch(() => {})
 
     return child
   }
