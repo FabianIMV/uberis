@@ -189,6 +189,11 @@ export default function WorldScreen() {
   const pinchDist0  = useRef<number | null>(null)
   const pinchScale0 = useRef(INIT_SCALE)
 
+  // canvasWrap position on screen (used for reliable tap coords in build mode)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const canvasWrapRef  = useRef<any>(null)
+  const wrapPageOffset = useRef({ x: 0, y: 0 })
+
   // Build mode
   const [buildMode, setBuildModeState] = useState(false)
   const buildModeRef = useRef(false)
@@ -321,9 +326,10 @@ export default function WorldScreen() {
           y: (translateY as any)._value,
         }
         // Place building on tap (movement < 12px)
+        // Use pageX/pageY minus the canvasWrap's screen position for reliable coords
         if (buildModeRef.current && Math.abs(gs.dx) < 12 && Math.abs(gs.dy) < 12) {
-          const sx = evt.nativeEvent.locationX
-          const sy = evt.nativeEvent.locationY
+          const sx = evt.nativeEvent.pageX - wrapPageOffset.current.x
+          const sy = evt.nativeEvent.pageY - wrapPageOffset.current.y
           const s  = lastScale.current
           const tx = lastOffset.current.x
           const ty = lastOffset.current.y
@@ -379,7 +385,18 @@ export default function WorldScreen() {
       </View>
 
       {/* ── World canvas ── */}
-      <View style={styles.canvasWrap} {...panResponder.panHandlers}>
+      <View
+        ref={canvasWrapRef}
+        style={styles.canvasWrap}
+        onLayout={() => {
+          canvasWrapRef.current?.measure(
+            (_x: number, _y: number, _w: number, _h: number, pageX: number, pageY: number) => {
+              wrapPageOffset.current = { x: pageX, y: pageY }
+            }
+          )
+        }}
+        {...panResponder.panHandlers}
+      >
         <Animated.View style={[
           styles.canvas,
           { transform: [{ translateX }, { translateY }, { scale }] },
@@ -621,7 +638,8 @@ export default function WorldScreen() {
             const pos = posRef.current[entity.id]
             if (!pos) return null
             const color = emotionColor(entity.emotional_state?.emotion)
-            const sz    = NODE + Math.min(entity.generation * 1.5, 8)
+            // Grows with generation AND age (capped at +14px total)
+            const sz    = NODE + Math.min(entity.generation * 2 + (entity.age_ticks ?? 0) * 0.08, 14)
             const szH   = sz / 2
             const selected = popup?.id === entity.id
             return (
@@ -703,7 +721,7 @@ export default function WorldScreen() {
             </Pressable>
           </View>
           <Text style={styles.popupMeta}>
-            ⚡ {Math.round(popup.energy ?? 0)} · Gen {popup.generation ?? 0} · {ZONE_NAME_ES[popup.current_zone] ?? popup.current_zone}
+            ⚡ {Math.round(popup.energy ?? 0)} · Gen {popup.generation ?? 0} · Edad {popup.age_ticks ?? 0} · {ZONE_NAME_ES[popup.current_zone] ?? popup.current_zone}
           </Text>
           {!!popup.last_thought && (
             <Text style={styles.popupThought} numberOfLines={3}>

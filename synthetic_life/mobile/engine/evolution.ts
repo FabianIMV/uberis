@@ -1,5 +1,35 @@
 import type { Genome, Entity } from './types'
 
+// ── Age constants ─────────────────────────────────────────────────────────────
+/** Ticks after which old-age drain begins */
+export const ELDER_AGE_TICKS = 60
+/** Ticks at which the entity dies of old age */
+export const MAX_AGE_TICKS   = 90
+
+// ── Intelligence ──────────────────────────────────────────────────────────────
+/**
+ * Derived intelligence 0–100.
+ * Grows with age, generation, memories and crystallised beliefs.
+ */
+export function computeIntelligence(entity: Entity): number {
+  return Math.min(100,
+    entity.age_ticks * 0.5 +
+    entity.generation * 8 +
+    entity.memory.length * 2 +
+    Object.keys(entity.beliefs).length * 3,
+  )
+}
+
+// ── Asexual cloning ───────────────────────────────────────────────────────────
+/**
+ * High-energy entities occasionally bud a clone (costs 30 energy from parent).
+ */
+export function shouldClone(entity: Entity): boolean {
+  if (entity.energy < 85) return false
+  if (entity.age_ticks < 8) return false
+  return Math.random() < 0.04
+}
+
 const TRAIT_NAMES: (keyof Genome)[] = [
   'curiosity', 'aggression', 'empathy', 'creativity', 'survival_drive',
 ]
