@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { AppState } from 'react-native'
 import { simulation, type SimState, type CatchUpSummary } from '../engine/simulation'
 import { subscribeToApiCalls, isApiConfigured } from '../engine/brain'
-import type { Entity, ConsciousnessLog, LiveEvent, WorldState } from '../engine/types'
+import type { Entity, ConsciousnessLog, LiveEvent, WorldState, Structure } from '../engine/types'
 import {
   dbGetAllEntities, dbGetEntityThoughts, dbGetWorldTimeline,
   dbGetEncounters, dbGetStats,
@@ -17,6 +17,7 @@ interface SimContextValue {
   worldState:         WorldState
   liveEvents:         LiveEvent[]
   logs:               Record<number, ConsciousnessLog[]>
+  structures:         Structure[]
   connected:          true
   isThinking:         boolean
   apiEnabled:         boolean
@@ -70,6 +71,7 @@ export function SimulationProvider({ children }: { children: React.ReactNode }) 
     worldState:         simState.worldState,
     liveEvents:         simState.liveEvents,
     logs:               simState.logs,
+    structures:         simState.structures ?? [],
     connected:          true,
     isThinking,
     apiEnabled:         isApiConfigured(),

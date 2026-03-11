@@ -6,7 +6,7 @@
 import {
   SEED_GENOMES, SEED_NAMES,
   getRandomName, createOffspringGenome, calculateEnergyDrain, shouldReproduce,
-  computeIntelligence, shouldClone, MAX_AGE_TICKS, ELDER_AGE_TICKS,
+  computeIntelligence, MAX_AGE_TICKS, ELDER_AGE_TICKS,
 } from './evolution'
 import {
   ZONES, ZONE_NAMES, WORLD_EVENTS, shouldFireWorldEvent, getWeightedEvent,
@@ -18,8 +18,11 @@ import {
   dbInsertEntity, dbRecordDeath, dbInsertThought,
   dbInsertWorldEvent, dbInsertEncounter,
 } from './database'
+import {
+  ZONE_STRUCTURE_TYPES, STRUCTURE_ENERGY_AURA,
+} from './world'
 import type {
-  Entity, WorldState, LiveEvent, ConsciousnessLog, FinalMessage,
+  Entity, WorldState, LiveEvent, ConsciousnessLog, FinalMessage, Structure,
 } from './types'
 
 export interface SimState {
@@ -27,6 +30,7 @@ export interface SimState {
   worldState:   WorldState
   liveEvents:   LiveEvent[]
   logs:         Record<number, ConsciousnessLog[]>  // id -> last 20 logs
+  structures:   Structure[]
 }
 
 export interface CatchUpSummary {
@@ -48,10 +52,12 @@ const MAX_CATCHUP_TICKS   = 1000
 let _idCounter = 1
 let _logIdCounter = 1
 let _eventIdCounter = 1
+let _structIdCounter = 1
 
-function nextId()    { return _idCounter++ }
-function nextLogId() { return _logIdCounter++ }
-function nextEvId()  { return _eventIdCounter++ }
+function nextId()      { return _idCounter++ }
+function nextLogId()   { return _logIdCounter++ }
+function nextEvId()    { return _eventIdCounter++ }
+function nextStructId(){ return _structIdCounter++ }
 
 export class Simulation {
   private state: SimState = {
@@ -59,6 +65,7 @@ export class Simulation {
     worldState: { current_tick: 0, total_births: 0, total_deaths: 0, cultural_beliefs: {} },
     liveEvents: [],
     logs:       {},
+    structures: [],
   }
 
   private timer: ReturnType<typeof setTimeout> | null = null
@@ -313,9 +320,20 @@ export class Simulation {
       dbInsertWorldEvent({ ...wev, id: 0 }).catch(() => {})
     }
 
+    // ── Apply structure energy auras to entities ────────────────────────────
+    let structures = [...(this.state.structures ?? [])]
+    for (const entity of entities) {
+      const aura = structures
+        .filter(s => s.zone === entity.current_zone)
+        .reduce((sum, s) => sum + s.energy_aura, 0)
+      if (aura > 0) entity.energy = Math.min(100, entity.energy + aura)
+    }
+    // Remove demolished structures
+    structures = structures.filter(s => s.hp > 0)
+
     // ── Process each entity in parallel ────────────────────────────────────
     const results = await Promise.all(
-      entities.map(e => this._processEntity({ ...e }, tick, ws, worldEventTemplate))
+      entities.map(e => this._processEntity({ ...e }, tick, ws, worldEventTemplate, structures))
     )
     const updated = results.map(r => r.entity)
     const clones  = results.flatMap(r => r.child ? [r.child] : [])
@@ -350,15 +368,25 @@ export class Simulation {
     // ── Auto-reseed ─────────────────────────────────────────────────────────
     if (alive.length < 2) this._seed()
 
+    // ── Merge structures (new ones from this tick + existing) ───────────────
+    for (const r of results) {
+      if (r.builtStructure) structures.push(r.builtStructure)
+      if (r.damagedStructureId != null) {
+        const s = structures.find(s => s.id === r.damagedStructureId)
+        if (s) s.hp = Math.max(0, s.hp - 30)
+      }
+    }
+    // Re-prune any newly demolished structures
+    const finalStructures = structures.filter(s => s.hp > 0)
+
     // ── Merge and commit ────────────────────────────────────────────────────
-    // Keep dead entities in state (for detail views) but not in the living list
     const allEntities = [
       ...alive,
       ...dead,
       ...this.state.entities.filter(e => !e.is_alive && !dead.find(d => d.id === e.id)),
     ]
 
-    this._setState({ entities: allEntities, worldState: ws })
+    this._setState({ entities: allEntities, worldState: ws, structures: finalStructures })
     this._pushEvent({ type: 'tick', tick, population: alive.length })
     this._notify()
     // Autosave every tick so the world persists between sessions
@@ -372,7 +400,8 @@ export class Simulation {
     tick: number,
     ws: WorldState,
     worldEvent: typeof WORLD_EVENTS[0] | null,
-  ): Promise<{ entity: Entity; child: Entity | null }> {
+    structures: Structure[],
+  ): Promise<{ entity: Entity; child: Entity | null; builtStructure: Structure | null; damagedStructureId: number | null }> {
     const zoneData = ZONES[e.current_zone] ?? ZONES.Garden
 
     // Zone effect
@@ -419,7 +448,7 @@ export class Simulation {
         life_meaning: msg.life_meaning, at_peace: msg.at_peace,
         cause: 'old_age', tick,
       })
-      return { entity: e, child: null }
+      return { entity: e, child: null, builtStructure: null, damagedStructureId: null }
     }
 
     // Energy death
@@ -454,14 +483,21 @@ export class Simulation {
         cause:       'energy',
         tick,
       })
-      return { entity: e, child: null }
+      return { entity: e, child: null, builtStructure: null, damagedStructureId: null }
     }
 
     // Think — smarter entities think more often (every 2 ticks vs 3)
-    const intel       = computeIntelligence(e)
-    const thinkEvery  = intel > 60 ? 2 : THINK_EVERY_N_TICKS
+    const intel      = computeIntelligence(e)
+    const thinkEvery = intel > 60 ? 2 : THINK_EVERY_N_TICKS
+
+    let child: Entity | null = null
+    let builtStructure: Structure | null = null
+    let damagedStructureId: number | null = null
+
+    const nearbyStructures = structures.filter(s => s.zone === e.current_zone)
+
     if (tick % thinkEvery === e.id % thinkEvery) {
-      const t = await think(e, tick, ws.cultural_beliefs)
+      const t = await think(e, tick, ws.cultural_beliefs, nearbyStructures)
       if (t) {
         e.last_thought          = t.inner_monologue
         e.emotional_state       = { emotion: t.emotion, intensity: t.emotion_intensity }
@@ -476,16 +512,89 @@ export class Simulation {
           e.beliefs = beliefs
         }
 
-        // Act
-        if (t.action === 'explore' && t.action_target && ZONES[t.action_target]) {
-          e.current_zone = t.action_target
-        } else if (t.action === 'rest') {
-          e.energy = Math.min(100, e.energy + 5)
-        } else if (t.action === 'seek_food') {
-          e.energy = Math.min(100, e.energy + 8)
+        // ── Execute action ────────────────────────────────────────────────
+        switch (t.action) {
+          case 'explore':
+            if (t.action_target && ZONES[t.action_target]) {
+              e.current_zone = t.action_target
+              e.energy = Math.max(0, e.energy - 3)   // travel costs energy
+              e.memory = [...e.memory, `Exploré hasta ${t.action_target}`].slice(-10)
+            }
+            break
+
+          case 'rest':
+            e.energy = Math.min(100, e.energy + 8)
+            break
+
+          case 'seek_food':
+            e.energy = Math.min(100, e.energy + 12)
+            e.memory = [...e.memory, 'Encontré alimento y me recuperé.'].slice(-10)
+            break
+
+          case 'build': {
+            const structType = t.action_target ?? (ZONE_STRUCTURE_TYPES[e.current_zone]?.[0])
+            if (structType && e.energy >= 15) {
+              e.energy -= 15
+              const aura = STRUCTURE_ENERGY_AURA[structType] ?? 1
+              builtStructure = {
+                id:           nextStructId(),
+                zone:         e.current_zone,
+                type:         structType,
+                builder_id:   e.id,
+                builder_name: e.name,
+                hp:           100,
+                energy_aura:  aura,
+                created_tick: tick,
+              }
+              e.memory = [...e.memory, `Construí ${structType} en ${e.current_zone}.`].slice(-10)
+              this._pushEvent({
+                type: 'structure_built', builder: e.name,
+                structure: structType, zone: e.current_zone, aura, tick,
+              })
+            }
+            break
+          }
+
+          case 'destroy': {
+            // Target the weakest foreign structure first, or pick by action_target type
+            const targets = nearbyStructures.filter(s => s.builder_id !== e.id)
+            const victim = t.action_target
+              ? (targets.find(s => s.type === t.action_target) ?? targets[0])
+              : targets.sort((a, b) => a.hp - b.hp)[0]
+            if (victim) {
+              e.energy = Math.max(0, e.energy - 5)
+              damagedStructureId = victim.id
+              const demolished = victim.hp - 30 <= 0
+              e.memory = [...e.memory,
+                demolished
+                  ? `Destruí completamente ${victim.type} de ${victim.builder_name}.`
+                  : `Dañé ${victim.type} de ${victim.builder_name} (${victim.hp - 30} HP restante).`
+              ].slice(-10)
+              this._pushEvent({
+                type: 'structure_damaged', attacker: e.name,
+                structure: victim.type, builder: victim.builder_name,
+                demolished, zone: e.current_zone, tick,
+              })
+            }
+            break
+          }
+
+          case 'clone': {
+            const canClone = e.energy >= 85 && e.age_ticks >= 8
+            if (canClone) {
+              e.energy -= 35
+              child = this._createOffspring(e, null, tick, ws)
+              e.memory = [...e.memory, `Me cloné. ${child.name} nació de mí.`].slice(-10)
+            }
+            break
+          }
+
+          // Emotional / social actions — no special cost
+          default:
+            break
         }
 
-        e.memory = [...e.memory, `Thought: ${e.last_thought?.slice(0, 110)}`].slice(-10)
+        e.memory = [...e.memory, `Pensé: ${e.last_thought?.slice(0, 100)}`].slice(-10)
 
         const tLog: ConsciousnessLog = {
           id:                nextLogId(),
@@ -515,19 +624,7 @@ export class Simulation {
       }
     }
 
-    // ── Asexual cloning (budding) ──────────────────────────────────────────
-    let child: Entity | null = null
-    if (shouldClone(e)) {
-      e.energy -= 30  // cost to parent
-      child = this._createOffspring(e, null, tick, ws)
-      this._pushEvent({
-        type: 'entity_born', name: child.name, generation: child.generation,
-        parent_a: e.name, parent_b: null, zone: e.current_zone,
-        cause: 'clone', tick,
-      })
-    }
-
-    return { entity: e, child }
+    return { entity: e, child, builtStructure, damagedStructureId }
   }
 
   // ── Encounters ─────────────────────────────────────────────────────────────

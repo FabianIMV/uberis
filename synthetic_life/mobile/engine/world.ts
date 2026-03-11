@@ -47,6 +47,22 @@ export const ZONES: Record<string, ZoneData> = {
 
 export const ZONE_NAMES = Object.keys(ZONES)
 
+// ─── What can be built in each zone ─────────────────────────────────────────
+export const ZONE_STRUCTURE_TYPES: Record<string, string[]> = {
+  Garden:  ['shelter', 'garden_patch', 'flower_circle', 'water_basin'],
+  Void:    ['beacon', 'void_altar', 'star_map', 'mirror_pool'],
+  Archive: ['bookshelf', 'monument', 'inscription_stone', 'memory_well'],
+  Storm:   ['barrier', 'lightning_rod', 'storm_shelter', 'wind_trap'],
+}
+
+// Energy regenerated per tick for entities in the same zone as the structure
+export const STRUCTURE_ENERGY_AURA: Record<string, number> = {
+  shelter: 2, garden_patch: 3, flower_circle: 1, water_basin: 2,
+  beacon: 1,  void_altar: 0,   star_map: 0,      mirror_pool: 1,
+  bookshelf: 1, monument: 0,   inscription_stone: 0, memory_well: 2,
+  barrier: 3,   lightning_rod: 2, storm_shelter: 4, wind_trap: 1,
+}
+
 export const WORLD_EVENTS: WorldEventTemplate[] = [
   { type: 'bloom',        description: 'A sudden flowering ripples through the Garden — energy surges, and something like joy becomes available to all.', zone: 'Garden',  effect: { energy: 20, emotion: 'joy' },         weight: 3 },
   { type: 'meteor',       description: 'Something falls from beyond the known. A trembling passes through all beings. Nothing is certain for a moment.', zone: null,     effect: { energy: -8, emotion: 'awe' },         weight: 2 },

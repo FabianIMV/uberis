@@ -1,3 +1,14 @@
+export interface Structure {
+  id:           number
+  zone:         string
+  type:         string     // e.g. 'shelter' | 'beacon' | 'barrier' ...
+  builder_id:   number
+  builder_name: string
+  hp:           number     // 0–100; removed from world when 0
+  energy_aura:  number     // passive +energy/tick for entities in same zone
+  created_tick: number
+}
+
 export interface Genome {
   curiosity:      number
   aggression:     number
