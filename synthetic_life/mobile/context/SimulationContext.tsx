@@ -1,20 +1,23 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react'
-import { simulation, type SimState } from '../engine/simulation'
+import { AppState } from 'react-native'
+import { simulation, type SimState, type CatchUpSummary } from '../engine/simulation'
 import { subscribeToApiCalls, isApiConfigured } from '../engine/brain'
 import type { Entity, ConsciousnessLog, LiveEvent, WorldState } from '../engine/types'
 
 // ─── Context shape ──────────────────────────────────────────────────────────
 
 interface SimContextValue {
-  entities:   Entity[]                     // living only
-  allEntities:Entity[]                     // living + dead (for detail views)
-  worldState: WorldState
-  liveEvents: LiveEvent[]
-  logs:       Record<number, ConsciousnessLog[]>
-  connected:  true                         // always true — no network needed
-  isThinking: boolean                      // true while Claude API call is in progress
-  apiEnabled: boolean                      // true if API key is configured
-  feedEntity: (id: number) => void
+  entities:           Entity[]
+  allEntities:        Entity[]
+  worldState:         WorldState
+  liveEvents:         LiveEvent[]
+  logs:               Record<number, ConsciousnessLog[]>
+  connected:          true
+  isThinking:         boolean
+  apiEnabled:         boolean
+  feedEntity:         (id: number) => void
+  awaySummary:        CatchUpSummary | null   // set when app re-opens after absence
+  dismissAwaySummary: () => void
 }
 
 const SimContext = createContext<SimContextValue | null>(null)
@@ -24,6 +27,7 @@ const SimContext = createContext<SimContextValue | null>(null)
 export function SimulationProvider({ children }: { children: React.ReactNode }) {
   const [simState, setSimState] = useState<SimState>(simulation.getState())
   const [isThinking, setIsThinking] = useState(false)
+  const [awaySummary, setAwaySummary] = useState<CatchUpSummary | null>(null)
   const startedRef = useRef(false)
 
   useEffect(() => {
@@ -32,25 +36,41 @@ export function SimulationProvider({ children }: { children: React.ReactNode }) 
 
     if (!startedRef.current) {
       startedRef.current = true
-      simulation.start()
+      simulation.start().then(() => {
+        const summary = simulation.getCatchUpSummary()
+        if (summary) {
+          setAwaySummary(summary)
+          simulation.clearCatchUpSummary()
+        }
+      })
     }
+
+    // Save world state whenever app goes to background
+    const appSub = AppState.addEventListener('change', appState => {
+      if (appState === 'background' || appState === 'inactive') {
+        simulation.save()
+      }
+    })
 
     return () => {
       unsub()
       unsubApi()
+      appSub.remove()
     }
   }, [])
 
   const value: SimContextValue = {
-    entities:   simState.entities.filter(e => e.is_alive),
-    allEntities:simState.entities,
-    worldState: simState.worldState,
-    liveEvents: simState.liveEvents,
-    logs:       simState.logs,
-    connected:  true,
+    entities:           simState.entities.filter(e => e.is_alive),
+    allEntities:        simState.entities,
+    worldState:         simState.worldState,
+    liveEvents:         simState.liveEvents,
+    logs:               simState.logs,
+    connected:          true,
     isThinking,
-    apiEnabled: isApiConfigured(),
-    feedEntity: (id) => simulation.feedEntity(id),
+    apiEnabled:         isApiConfigured(),
+    feedEntity:         (id) => simulation.feedEntity(id),
+    awaySummary,
+    dismissAwaySummary: () => setAwaySummary(null),
   }
 
   return (

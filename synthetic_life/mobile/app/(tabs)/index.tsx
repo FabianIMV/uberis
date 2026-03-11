@@ -175,9 +175,17 @@ function ExtraTreeShape({ x, y }: { x: number; y: number }) {
 
 let _nextBuildId = 1
 
+function formatAway(ms: number): string {
+  const mins = Math.floor(ms / 60_000)
+  if (mins < 60) return `${mins} min`
+  const h = Math.floor(mins / 60), m = mins % 60
+  return m > 0 ? `${h}h ${m}min` : `${h}h`
+}
+
 // ── World Screen ──────────────────────────────────────────────────────────────
 export default function WorldScreen() {
-  const { entities, worldState, liveEvents, isThinking, apiEnabled, feedEntity } = useSimulation()
+  const { entities, worldState, liveEvents, isThinking, apiEnabled, feedEntity,
+          awaySummary, dismissAwaySummary } = useSimulation()
   const router = useRouter()
 
   // Pan / zoom
@@ -383,6 +391,23 @@ export default function WorldScreen() {
           <View style={styles.dotLive} />
         </View>
       </View>
+
+      {/* ── Away banner (shown when app resumes after absence) ── */}
+      {awaySummary && (
+        <View style={styles.awayBanner}>
+          <View style={styles.awayBody}>
+            <Text style={styles.awayTitle}>⏰ El mundo siguió sin ti</Text>
+            <Text style={styles.awaySub}>
+              {formatAway(awaySummary.msAway)} · {awaySummary.ticksSimulated} ticks ·{' '}
+              {awaySummary.births > 0 ? `${awaySummary.births} nacimientos · ` : ''}
+              {awaySummary.deaths > 0 ? `${awaySummary.deaths} muertes` : 'todos sobrevivieron'}
+            </Text>
+          </View>
+          <Pressable onPress={dismissAwaySummary} style={styles.awayClose}>
+            <Text style={styles.awayCloseTxt}>✕</Text>
+          </Pressable>
+        </View>
+      )}
 
       {/* ── World canvas ── */}
       <View
@@ -874,4 +899,16 @@ const styles = StyleSheet.create({
   },
   zoomBtnActive: { backgroundColor: '#052e16', borderColor: '#22c55e' },
   zoomTxt:       { fontSize: 20, color: COLORS.text, fontWeight: '300', lineHeight: 26 },
+
+  // Away banner
+  awayBanner: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#0c1a2e', borderBottomWidth: 1, borderBottomColor: '#1d4ed8',
+    paddingHorizontal: 14, paddingVertical: 8,
+  },
+  awayBody:    { flex: 1 },
+  awayTitle:   { fontSize: 12, fontWeight: '700', color: '#60a5fa' },
+  awaySub:     { fontSize: 10, color: COLORS.textMuted, marginTop: 1 },
+  awayClose:   { paddingLeft: 12 },
+  awayCloseTxt:{ fontSize: 14, color: COLORS.textDim },
 })
