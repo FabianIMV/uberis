@@ -5,6 +5,7 @@
 import {
   SEED_GENOMES, SEED_NAMES,
   getRandomName, createOffspringGenome, calculateEnergyDrain, shouldReproduce,
+  computeIntelligence, shouldClone, MAX_AGE_TICKS, ELDER_AGE_TICKS,
 } from './evolution'
 import {
   ZONES, ZONE_NAMES, WORLD_EVENTS, shouldFireWorldEvent, getWeightedEvent,
@@ -142,12 +143,14 @@ export class Simulation {
     }
 
     // ── Process each entity in parallel ────────────────────────────────────
-    const updated: Entity[] = await Promise.all(
+    const results = await Promise.all(
       entities.map(e => this._processEntity({ ...e }, tick, ws, worldEventTemplate))
     )
+    const updated = results.map(r => r.entity)
+    const clones  = results.flatMap(r => r.child ? [r.child] : [])
 
-    // Partition alive / dead
-    const alive = updated.filter(e => e.is_alive)
+    // Partition alive / dead (clones start alive)
+    const alive = [...updated.filter(e => e.is_alive), ...clones]
     const dead  = updated.filter(e => !e.is_alive)
 
     // Grief
@@ -196,7 +199,7 @@ export class Simulation {
     tick: number,
     ws: WorldState,
     worldEvent: typeof WORLD_EVENTS[0] | null,
-  ): Promise<Entity> {
+  ): Promise<{ entity: Entity; child: Entity | null }> {
     const zoneData = ZONES[e.current_zone] ?? ZONES.Garden
 
     // Zone effect
@@ -209,12 +212,41 @@ export class Simulation {
       e.memory = [...e.memory, `A ${worldEvent.type} came — ${worldEvent.description.slice(0, 90)}`].slice(-10)
     }
 
-    // Energy drain
+    // Energy drain (base)
     const drain = calculateEnergyDrain(e)
     e.energy = Math.max(0, Math.min(100, e.energy - drain))
+
+    // Old-age extra drain: after ELDER_AGE_TICKS, progressive deterioration
+    if (e.age_ticks > ELDER_AGE_TICKS) {
+      const ageFactor = (e.age_ticks - ELDER_AGE_TICKS) / (MAX_AGE_TICKS - ELDER_AGE_TICKS)
+      e.energy = Math.max(0, e.energy - ageFactor * 2)
+    }
+
     e.age_ticks += 1
 
-    // Death
+    // Old-age death
+    if (e.age_ticks >= MAX_AGE_TICKS) {
+      const msg = await generateDyingMessage(e)
+      e.is_alive      = false
+      e.final_message = msg
+      e.died_at_tick  = tick
+      ws.total_deaths += 1
+      this._appendLog({
+        id: nextLogId(), entity_id: e.id, tick,
+        thought: msg.final_words, action: 'die', action_target: null,
+        emotion: msg.final_emotion, emotion_intensity: 1.0,
+        timestamp: new Date().toISOString(),
+      })
+      this._pushEvent({
+        type: 'entity_died', id: e.id, name: e.name,
+        age_ticks: e.age_ticks, final_words: msg.final_words,
+        life_meaning: msg.life_meaning, at_peace: msg.at_peace,
+        cause: 'old_age', tick,
+      })
+      return { entity: e, child: null }
+    }
+
+    // Energy death
     if (e.energy <= 5) {
       const msg = await generateDyingMessage(e)
       e.is_alive      = false
@@ -240,13 +272,16 @@ export class Simulation {
         final_words: msg.final_words,
         life_meaning:msg.life_meaning,
         at_peace:    msg.at_peace,
+        cause:       'energy',
         tick,
       })
-      return e
+      return { entity: e, child: null }
     }
 
-    // Think (stagger entities so not all call at the same tick)
-    if (tick % THINK_EVERY_N_TICKS === e.id % THINK_EVERY_N_TICKS) {
+    // Think — smarter entities think more often (every 2 ticks vs 3)
+    const intel       = computeIntelligence(e)
+    const thinkEvery  = intel > 60 ? 2 : THINK_EVERY_N_TICKS
+    if (tick % thinkEvery === e.id % thinkEvery) {
       const t = await think(e, tick, ws.cultural_beliefs)
       if (t) {
         e.last_thought          = t.inner_monologue
@@ -299,7 +334,19 @@ export class Simulation {
       }
     }
 
-    return e
+    // ── Asexual cloning (budding) ──────────────────────────────────────────
+    let child: Entity | null = null
+    if (shouldClone(e)) {
+      e.energy -= 30  // cost to parent
+      child = this._createOffspring(e, null, tick, ws)
+      this._pushEvent({
+        type: 'entity_born', name: child.name, generation: child.generation,
+        parent_a: e.name, parent_b: null, zone: e.current_zone,
+        cause: 'clone', tick,
+      })
+    }
+
+    return { entity: e, child }
   }
 
   // ── Encounters ─────────────────────────────────────────────────────────────

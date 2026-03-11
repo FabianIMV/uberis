@@ -1,0 +1,40 @@
+name: EAS Update
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  update:
+    name: EAS Update — Synthetic Life
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: synthetic_life/mobile/package-lock.json
+
+      - name: Install dependencies
+        working-directory: synthetic_life/mobile
+        run: npm ci
+
+      - name: Publish EAS Update
+        working-directory: synthetic_life/mobile
+        env:
+          # Add these two secrets in GitHub → Settings → Secrets → Actions:
+          #   EXPO_TOKEN     → your Expo access token (expo.dev → Account → Access Tokens)
+          #   ANTHROPIC_API_KEY → your Anthropic key (sk-ant-...)
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: >
+          npx eas-cli@latest update
+          --branch main
+          --message "Deploy: ${{ github.event.head_commit.message || 'manual trigger' }}"
+          --non-interactive
