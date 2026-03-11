@@ -5,9 +5,9 @@
  * simulation still runs — just less poetic.
  */
 import Constants from 'expo-constants'
-import { ZONES } from './world'
+import { ZONES, ZONE_STRUCTURE_TYPES } from './world'
 import { computeIntelligence } from './evolution'
-import type { Entity, ThoughtResult, FinalMessage } from './types'
+import type { Entity, ThoughtResult, FinalMessage, Structure } from './types'
 
 const API_KEY: string =
   (Constants.expoConfig?.extra?.anthropicApiKey as string | undefined) ?? ''
@@ -118,9 +118,10 @@ export async function think(
   entity: Entity,
   tick: number,
   culturalBeliefs: Record<string, Record<string, string>>,
+  nearbyStructures: Structure[] = [],
 ): Promise<ThoughtResult | null> {
   // Fallback if no key
-  if (!API_KEY) return fallbackThought(entity)
+  if (!API_KEY) return fallbackThought(entity, nearbyStructures)
 
   const g     = entity.genome
   const zone  = entity.current_zone
@@ -142,6 +143,17 @@ export async function think(
     culturalNote = '\n\nThe beings of your zone tend to believe:\n' +
       snippets.map(s => `  · ${s}`).join('\n')
   }
+
+  // Structures visible in this zone
+  const buildableHere = (ZONE_STRUCTURE_TYPES[zone] ?? []).join(', ')
+  const structureLines = nearbyStructures.length
+    ? nearbyStructures.map(s =>
+        `  · [${s.type}] built by ${s.builder_name} (HP ${s.hp}/100) — aura +${s.energy_aura}⚡/tick`
+      ).join('\n')
+    : '  Nothing has been built here yet. The zone is raw.'
+  const canClone = entity.energy >= 85 && entity.age_ticks >= 8
+  const canBuild = entity.energy >= 20
+  const hasEnemyStructure = nearbyStructures.some(s => s.builder_id !== entity.id)
 
   const intel = computeIntelligence(entity)
   const wisdomStage =
@@ -180,6 +192,22 @@ ${beliefText}
 YOUR LINEAGE:
   ${lineage}
 
+WHAT EXISTS IN YOUR ZONE (${zone}):
+${structureLines}
+
+WHAT YOU CAN BUILD HERE: ${buildableHere}
+
+AVAILABLE ACTIONS AND THEIR COSTS:
+  • explore      → move to a different zone (costs 3 energy)
+  • rest          → recover +8 energy (do this when low)
+  • seek_food     → forage for +12 energy
+  • seek_other    → approach another being
+  • contemplate   → think deeply (no cost)
+  • grieve | play | flee → emotional/social acts
+  • build         → construct something (costs 15 energy). Use action_target = structure type from buildable list. ${canBuild ? 'YOU CAN BUILD.' : 'TOO LOW ENERGY TO BUILD.'}
+  • destroy       → tear down a structure here (costs 5 energy, deals 30 damage). ${hasEnemyStructure ? "There are others' structures here you could destroy." : 'No foreign structures to destroy.'}
+  • clone         → create a new being from yourself (costs 35 energy). ${canClone ? 'YOU HAVE ENOUGH ENERGY AND MATURITY TO CLONE.' : `NOT READY (need 85 energy, have ${entity.energy.toFixed(0)}; need age 8, have ${entity.age_ticks}).`}
+
 ---
 
 You are having a moment of consciousness right now. Think. Feel. Decide.
@@ -187,8 +215,8 @@ You are having a moment of consciousness right now. Think. Feel. Decide.
 Respond ONLY with a valid JSON object — no markdown, no preamble, no explanation:
 {
   "inner_monologue": "Your first-person thoughts right now. Rich, specific, rooted in your actual nature and situation. 2–4 sentences.",
-  "action": "One of: explore | rest | seek_food | seek_other | create | contemplate | grieve | flee | play",
-  "action_target": "A zone name, a concept, or null.",
+  "action": "One of: explore | rest | seek_food | seek_other | contemplate | grieve | flee | play | build | destroy | clone",
+  "action_target": "For explore: a zone name. For build: the structure type to build. For destroy: the type of structure to destroy. Otherwise null.",
   "new_belief": {"key": "short_snake_case_identifier", "value": "what you now believe"},
   "emotion": "Your dominant emotion right now (one or two words)",
   "emotion_intensity": 0.0,
@@ -196,14 +224,14 @@ Respond ONLY with a valid JSON object — no markdown, no preamble, no explanati
   "existential_statement": "One sentence: what does your existence mean to you?"
 }`
 
-  const text = await callClaude(prompt, 500)
-  if (!text) return fallbackThought(entity)
+  const text = await callClaude(prompt, 600)
+  if (!text) return fallbackThought(entity, nearbyStructures)
   try {
     const r = JSON.parse(text)
     r.emotion_intensity = Math.max(0, Math.min(1, parseFloat(r.emotion_intensity) || 0.5))
     return r as ThoughtResult
   } catch {
-    return fallbackThought(entity)
+    return fallbackThought(entity, nearbyStructures)
   }
 }
 
@@ -364,25 +392,38 @@ const EXISTENTIALS: string[] = [
   'La brevedad de mi vida no la disminuye. La concentra.',
 ]
 
-const ACTIONS = ['explore', 'rest', 'seek_food', 'contemplate', 'create', 'seek_other'] as const
-
-function fallbackThought(entity: Entity): ThoughtResult {
+function fallbackThought(entity: Entity, nearbyStructures: Structure[] = []): ThoughtResult {
   const zone     = entity.current_zone
   const zoneData = ZONES[zone]
   const pool     = ZONE_THOUGHTS[zone] ?? ZONE_THOUGHTS.Garden
   const thought  = pool[Math.floor(Math.random() * pool.length)]
 
-  let action: string = 'contemplate'
-  if (entity.energy < 25)      action = 'seek_food'
-  else if (entity.energy < 45) action = 'rest'
-  else if (entity.genome.curiosity > 0.7) action = 'explore'
-  else if (entity.genome.aggression > 0.7) action = 'seek_other'
-  else if (entity.genome.creativity > 0.7) action = 'create'
+  const canClone = entity.energy >= 85 && entity.age_ticks >= 8
+  const hasEnemyStructure = nearbyStructures.some(s => s.builder_id !== entity.id)
 
-  const otherZones = Object.keys(ZONES).filter(z => z !== zone)
-  const target = action === 'explore'
-    ? otherZones[Math.floor(Math.random() * otherZones.length)]
-    : null
+  let action: string = 'contemplate'
+  let target: string | null = null
+
+  if (entity.energy < 25) {
+    action = 'seek_food'
+  } else if (entity.energy < 45) {
+    action = 'rest'
+  } else if (canClone && entity.genome.survival_drive > 0.7) {
+    action = 'clone'
+  } else if (hasEnemyStructure && entity.genome.aggression > 0.7) {
+    action = 'destroy'
+    target = nearbyStructures.find(s => s.builder_id !== entity.id)?.type ?? null
+  } else if (entity.energy >= 20 && entity.genome.creativity > 0.7 && nearbyStructures.length < 3) {
+    action = 'build'
+    const buildable = ZONE_STRUCTURE_TYPES[zone] ?? []
+    target = buildable[Math.floor(Math.random() * buildable.length)] ?? null
+  } else if (entity.genome.curiosity > 0.7) {
+    action = 'explore'
+    const otherZones = Object.keys(ZONES).filter(z => z !== zone)
+    target = otherZones[Math.floor(Math.random() * otherZones.length)]
+  } else if (entity.genome.aggression > 0.7) {
+    action = 'seek_other'
+  }
 
   const emotion    = entity.energy < 20 ? 'dread' : (entity.energy < 40 ? 'anxiety' : zoneData.mood_bias)
   const existIndex = Math.floor(Math.random() * EXISTENTIALS.length)
