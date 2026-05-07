@@ -1,9 +1,9 @@
 /**
- * World v20 — Entity trail echoes, zone weather glyphs.
- * Wandering entities leave a brief fading shadow at their previous
- * position — a ghost of where they stood. Each zone also gets an
- * ambient weather glyph (☀ Garden, ⌛ Archive, ∞ Void, ⚡ Storm)
- * that pulses softly in the sky.
+ * World v21 — Generation gold tint, entity idle animations.
+ * Entity core color blends toward amber/gold based on generation,
+ * letting high-lineage beings visually stand out. Low-energy entities
+ * gently sway left-right (a subtle idle animation) to indicate they
+ * are still alive but struggling.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -49,6 +49,16 @@ interface Building { id: number; type: BuildType; x: number; y: number }
 const BUILD_LABEL: Record<BuildType, string> = { house:'Casa', rock:'Roca', fire:'Fogata', tree:'Árbol' }
 const BUILD_EMOJI: Record<BuildType, string> = { house:'🏠', rock:'🪨', fire:'🔥', tree:'🌲' }
 let _nextBuildId = 1
+
+function blendToGold(baseColor: string, gen: number): string {
+  // Blend from base emotion color toward gold as generation increases (gen 3 = light tint, gen 6+ = strong)
+  const t = Math.min(1, Math.max(0, (gen - 2) / 5))
+  if (t <= 0) return baseColor
+  // Return gold-tinted version by mixing hex — simplified: return amber for high gen
+  if (t > 0.7) return '#f59e0b'
+  if (t > 0.4) return '#d97706'
+  return baseColor
+}
 
 function randomInRegion(zone: string): { x: number; y: number } {
   const r = REGION[zone] ?? REGION.Garden
@@ -338,6 +348,20 @@ export default function WorldScreen() {
       Animated.sequence([
         Animated.timing(hungerPulse, { toValue: 1, duration: 650, useNativeDriver: true }),
         Animated.timing(hungerPulse, { toValue: 0, duration: 650, useNativeDriver: true }),
+      ])
+    )
+    loop.start()
+    return () => loop.stop()
+  }, [])
+
+  // ── Idle sway for low-energy entities ────────────────────────────────────
+  const idleSway = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(idleSway, { toValue: 1,  duration: 1100, useNativeDriver: true }),
+        Animated.timing(idleSway, { toValue: -1, duration: 1100, useNativeDriver: true }),
+        Animated.timing(idleSway, { toValue: 0,  duration: 800,  useNativeDriver: true }),
       ])
     )
     loop.start()
@@ -1645,9 +1669,11 @@ export default function WorldScreen() {
                     opacity: pulseGlowOpacity,
                     transform: [{ scale: energy > 70 ? 1.1 : energy < 30 ? 0.85 : 1 }],
                   }]} />
-                  <View style={[styles.entityCore, {
+                  <Animated.View style={[styles.entityCore, {
                     width: sz, height: sz, borderRadius: szH,
-                    backgroundColor: color, shadowColor: color,
+                    backgroundColor: blendToGold(color, entity.generation),
+                    shadowColor: blendToGold(color, entity.generation),
+                    transform: energy < 30 ? [{ translateX: idleSway.interpolate({ inputRange: [-1, 0, 1], outputRange: [-2, 0, 2] }) }] : [],
                   }]} />
                   <Text style={[styles.entityLabel, { color }]} numberOfLines={1}>{entity.name}</Text>
                   {entity.generation >= 3 && (
