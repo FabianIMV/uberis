@@ -1,8 +1,9 @@
 /**
- * World v19 — Entity desire whispers, Void portal bursts.
- * Idle entities periodically exhale their current_desire as a ghostly
- * rising wisp. The Void portal ellipses flash a bright burst every
- * 15-30 seconds, making the zone feel alive and unpredictable.
+ * World v20 — Entity trail echoes, zone weather glyphs.
+ * Wandering entities leave a brief fading shadow at their previous
+ * position — a ghost of where they stood. Each zone also gets an
+ * ambient weather glyph (☀ Garden, ⌛ Archive, ∞ Void, ⚡ Storm)
+ * that pulses softly in the sky.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -237,6 +238,7 @@ interface Mote         { id: number; x: number; baseY: number; anim: Animated.Va
 interface Bird         { id: number; y: number; anim: Animated.Value }
 interface NebWisp      { id: number; x: number; y: number; color: string; len: number; angle: number; anim: Animated.Value }
 interface DesireWisp   { id: number; x: number; y: number; text: string; anim: Animated.Value }
+interface TrailEcho    { id: number; x: number; y: number; color: string; anim: Animated.Value }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function WorldScreen() {
@@ -271,6 +273,8 @@ export default function WorldScreen() {
   const [desireWisps, setDesireWisps] = useState<DesireWisp[]>([])
   const nextDesireId = useRef(0)
   const portalBurstAnim = useRef(new Animated.Value(0)).current
+  const [trailEchoes, setTrailEchoes] = useState<TrailEcho[]>([])
+  const nextTrailId = useRef(0)
 
   // Entity positions
   const posRef = useRef<Record<number, { x: Animated.Value; y: Animated.Value }>>({})
@@ -920,6 +924,17 @@ export default function WorldScreen() {
       entitiesRef.current.forEach(entity => {
         const pos = posRef.current[entity.id]
         if (!pos) return
+        // Emit trail echo at current position before moving
+        if (Math.random() < 0.4) {
+          const ex = (pos.x as any)._value as number
+          const ey = (pos.y as any)._value as number
+          const color = '#94a3b8'
+          const tanim = new Animated.Value(1)
+          const tid = nextTrailId.current++
+          setTrailEchoes(prev => [...prev.slice(-18), { id: tid, x: ex, y: ey, color, anim: tanim }])
+          Animated.timing(tanim, { toValue: 0, duration: 2200, useNativeDriver: true })
+            .start(() => setTrailEchoes(prev => prev.filter(t => t.id !== tid)))
+        }
         const p = randomInRegion(entity.current_zone)
         Animated.parallel([
           Animated.timing(pos.x, { toValue: p.x, duration: 2200, useNativeDriver: false }),
@@ -1322,6 +1337,21 @@ export default function WorldScreen() {
             </View>
           ))}
 
+          {/* Zone weather glyphs */}
+          {([
+            { zone: 'Garden',  left: ZW * 0 + 6, top: 35, glyph: '☀' },
+            { zone: 'Archive', left: ZW * 1 + 6, top: 35, glyph: '⌛' },
+            { zone: 'Void',    left: ZW * 2 + 6, top: 35, glyph: '∞' },
+            { zone: 'Storm',   left: ZW * 3 + 6, top: 35, glyph: '⚡' },
+          ] as { zone: string; left: number; top: number; glyph: string }[]).map(({ zone, left, top, glyph }) => (
+            <Animated.View key={'wg' + zone} pointerEvents="none" style={{ position: 'absolute', left, top,
+              opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.18, 0.52] }),
+              transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1.06] }) }],
+            }}>
+              <Text style={[styles.weatherGlyph, { color: ZONE_COLOR[zone] }]}>{glyph}</Text>
+            </Animated.View>
+          ))}
+
           {/* Twinkling stars */}
           {TWINKLE_STARS.map((star, i) => (
             <Animated.View key={`ts${i}`} style={[styles.twinkleStar, {
@@ -1572,6 +1602,15 @@ export default function WorldScreen() {
               )
             })
           })()}
+
+          {/* Entity trail echoes */}
+          {trailEchoes.map(t => (
+            <Animated.View key={t.id} pointerEvents="none" style={[styles.trailEcho, {
+              left: t.x - 5, top: t.y - 5,
+              opacity: t.anim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.28] }),
+              transform: [{ scale: t.anim.interpolate({ inputRange: [0, 1], outputRange: [0.5, 1] }) }],
+            }]} />
+          ))}
 
           {/* Entities */}
           {entities.map(entity => {
@@ -2193,5 +2232,14 @@ const styles = StyleSheet.create({
   },
   desireWispTxt: {
     fontSize: 7.5, color: '#a78bfa', fontStyle: 'italic', lineHeight: 11, textAlign: 'center',
+  },
+  trailEcho: {
+    position: 'absolute', width: 10, height: 10, borderRadius: 5,
+    backgroundColor: '#94a3b8',
+    shadowColor: '#94a3b8', shadowOpacity: 0.5, shadowRadius: 4, shadowOffset: { width: 0, height: 0 },
+  },
+  weatherGlyph: {
+    fontSize: 14, fontWeight: '300', opacity: 0.6,
+    textShadowColor: '#000', textShadowRadius: 3, textShadowOffset: { width: 0, height: 0 },
   },
 })
