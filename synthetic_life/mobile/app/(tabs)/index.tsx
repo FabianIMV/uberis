@@ -1,8 +1,8 @@
 /**
- * World v15 — Entity hunger pulses, zone border light pillars.
- * Hungry entities (energy < 35%) flash a red warning dot so resource
- * crises are visible at a glance. Soft luminous pillars mark zone
- * boundaries, breathing gently with the world's pulse.
+ * World v16 — Elder entity golden rings, zone dominance crown.
+ * Ancient entities (age ≥ 50 ticks or generation ≥ 5) are distinguished
+ * by a pulsing golden dashed ring. The most populated zone earns a crown
+ * symbol in its label, shifting as the world's balance changes.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -946,6 +946,14 @@ export default function WorldScreen() {
     return map
   }, [entities])
 
+  const dominantZone = useMemo(() => {
+    if (entities.length < 3) return null
+    return ZONES.reduce<string | null>((best, z) => {
+      if (best === null) return z
+      return (zoneCounts[z] ?? 0) > (zoneCounts[best] ?? 0) ? z : best
+    }, null)
+  }, [entities, zoneCounts])
+
   const prophecy = useMemo(() => {
     if (entities.length === 0) return 'El mundo duerme...'
     if (entities.length < 3) return 'El mundo agoniza...'
@@ -1200,7 +1208,9 @@ export default function WorldScreen() {
             { zone: 'Storm',   left: ZW * 3 + ZW/2 - 30, top: 16 },
           ].map(({ zone, left, top }) => (
             <View key={zone} style={[styles.zoneLabel, { left, top }]}>
-              <Text style={[styles.zoneName, { color: ZONE_COLOR[zone] }]}>{ZONE_NAME_ES[zone]}</Text>
+              <Text style={[styles.zoneName, { color: ZONE_COLOR[zone] }]}>
+                {zone === dominantZone ? '⚜ ' : ''}{ZONE_NAME_ES[zone]}
+              </Text>
             </View>
           ))}
 
@@ -1444,6 +1454,13 @@ export default function WorldScreen() {
             return (
               <Animated.View key={entity.id} style={[styles.entityWrap, { left: pos.x, top: pos.y }]}>
                 <Pressable onPress={() => setPopup(p => p?.id === entity.id ? null : entity)} style={styles.entityInner}>
+                  {((entity.age_ticks ?? 0) >= 50 || entity.generation >= 5) && (
+                    <Animated.View style={[styles.elderRing, {
+                      width: sz + 26, height: sz + 26, borderRadius: (sz + 26) / 2,
+                      top: -szH - 13, left: -szH - 13,
+                      opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.45, 0.95] }),
+                    }]} />
+                  )}
                   {selected && (
                     <View style={[styles.entitySelect, {
                       width: sz + 20, height: sz + 20, borderRadius: (sz + 20) / 2,
@@ -1834,6 +1851,10 @@ const styles = StyleSheet.create({
 
   entityWrap:   { position: 'absolute', alignItems: 'center' },
   entityInner:  { alignItems: 'center' },
+  elderRing: {
+    position: 'absolute', borderWidth: 1.5, borderColor: '#fbbf24', borderStyle: 'dashed',
+    shadowColor: '#fbbf24', shadowOpacity: 0.7, shadowRadius: 6, shadowOffset: { width: 0, height: 0 },
+  },
   entitySelect: { position: 'absolute', borderWidth: 2, borderStyle: 'dashed' },
   entityGlow:   { position: 'absolute', borderWidth: 1, shadowOpacity: 0.8, shadowRadius: 8, shadowOffset: { width: 0, height: 0 } },
   entityCore:   { shadowOpacity: 0.9, shadowRadius: 8, shadowOffset: { width: 0, height: 0 }, elevation: 8 },
