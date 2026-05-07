@@ -12,6 +12,21 @@ import EnergyBar from '../../components/EnergyBar'
 import GenomeBar from '../../components/GenomeBar'
 import { useEntityById, useEntityLogs, useSimulation } from '../../context/SimulationContext'
 import { COLORS, emotionColor } from '../../constants/theme'
+import type { RelationshipEntry } from '../../engine/types'
+
+const VALENCE_COLOR: Record<string, string> = {
+  family: '#a78bfa',
+  friend: '#34d399',
+  rival:  '#f87171',
+  neutral:'#94a3b8',
+}
+const VALENCE_ICON: Record<string, string> = {
+  family: '💜',
+  friend: '💚',
+  rival:  '⚔️',
+  neutral:'○',
+}
+const VALENCE_ORDER = ['family', 'friend', 'rival', 'neutral'] as const
 
 export default function EntityDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>()
@@ -42,6 +57,11 @@ export default function EntityDetailScreen() {
   const emotion = entity.emotional_state?.emotion ?? 'neutral'
   const eColor  = emotionColor(emotion)
 
+  const relationships = entity.relationships ?? {}
+  const relEntries = Object.values(relationships) as RelationshipEntry[]
+  const hasRelationships = relEntries.length > 0
+  const memArchive = entity.memory_archive ?? []
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {/* Hero */}
@@ -52,6 +72,9 @@ export default function EntityDetailScreen() {
           <Text style={styles.heroMeta}>
             Gen {entity.generation} · Edad {entity.age_ticks} · {entity.current_zone}
           </Text>
+          {entity.current_goal && (
+            <Text style={styles.goalInHero} numberOfLines={1}>🎯 {entity.current_goal}</Text>
+          )}
           {!entity.is_alive && (
             <Text style={styles.deadBadge}>† Fallecido en turno {entity.died_at_tick}</Text>
           )}
@@ -104,12 +127,68 @@ export default function EntityDetailScreen() {
         </>
       )}
 
+      {/* Current Goal */}
+      {entity.current_goal && (
+        <>
+          <Text style={styles.sectionTitle}>Objetivo activo</Text>
+          <View style={[styles.card, { borderLeftWidth: 3, borderLeftColor: '#34d399' }]}>
+            <Text style={styles.goalText}>{entity.current_goal}</Text>
+          </View>
+        </>
+      )}
+
       {/* Existential statement */}
       {entity.existential_statement && (
         <>
           <Text style={styles.sectionTitle}>Visión existencial</Text>
           <View style={[styles.card, { borderLeftWidth: 3, borderLeftColor: '#a78bfa' }]}>
             <Text style={styles.existText}>{entity.existential_statement}</Text>
+          </View>
+        </>
+      )}
+
+      {/* Relationships */}
+      {hasRelationships && (
+        <>
+          <Text style={styles.sectionTitle}>Relaciones</Text>
+          <View style={styles.card}>
+            {VALENCE_ORDER.map(valence => {
+              const group = relEntries
+                .filter(r => r.valence === valence)
+                .sort((a, b) => b.intensity - a.intensity)
+              if (group.length === 0) return null
+              return (
+                <View key={valence} style={styles.valenceGroup}>
+                  <Text style={[styles.valenceLabel, { color: VALENCE_COLOR[valence] }]}>
+                    {VALENCE_ICON[valence]}  {valence}
+                  </Text>
+                  {group.map(rel => (
+                    <View key={rel.name} style={styles.relRow}>
+                      <View style={styles.relHeader}>
+                        <Text style={styles.relName}>{rel.name}</Text>
+                        <Text style={styles.relMeta}>
+                          {rel.encounters} enc · {Math.round(rel.intensity * 100)}%
+                        </Text>
+                      </View>
+                      <View style={styles.relBarBg}>
+                        <View
+                          style={[
+                            styles.relBarFill,
+                            {
+                              width: `${Math.round(rel.intensity * 100)}%` as any,
+                              backgroundColor: VALENCE_COLOR[valence],
+                            },
+                          ]}
+                        />
+                      </View>
+                      {!!rel.key_memory && (
+                        <Text style={styles.relMemory} numberOfLines={2}>{rel.key_memory}</Text>
+                      )}
+                    </View>
+                  ))}
+                </View>
+              )
+            })}
           </View>
         </>
       )}
@@ -129,10 +208,25 @@ export default function EntityDetailScreen() {
         </>
       )}
 
-      {/* Memory */}
+      {/* Episodic memory archive */}
+      {memArchive.length > 0 && (
+        <>
+          <Text style={styles.sectionTitle}>Archivo episódico</Text>
+          <View style={[styles.card, { borderColor: '#1e293b' }]}>
+            {memArchive.map((mem, i) => (
+              <View key={i} style={styles.archiveRow}>
+                <Text style={styles.archiveIcon}>⬡</Text>
+                <Text style={styles.archiveText}>{mem}</Text>
+              </View>
+            ))}
+          </View>
+        </>
+      )}
+
+      {/* Memory (recent) */}
       {entity.memory && entity.memory.length > 0 && (
         <>
-          <Text style={styles.sectionTitle}>Memoria</Text>
+          <Text style={styles.sectionTitle}>Memoria reciente</Text>
           <View style={styles.card}>
             {[...entity.memory].reverse().map((mem, i) => (
               <View key={i} style={styles.memRow}>
@@ -209,12 +303,13 @@ const styles = StyleSheet.create({
     width: 16, height: 16, borderRadius: 8,
     shadowOpacity: 0.9, shadowRadius: 8, shadowOffset: { width: 0, height: 0 }, elevation: 6,
   },
-  heroText:  { flex: 1 },
-  heroName:  { fontSize: 20, fontWeight: '800', color: COLORS.text },
-  heroMeta:  { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
-  deadBadge: { fontSize: 11, color: '#ef4444', marginTop: 4 },
-  feedBtn:   { backgroundColor: '#052e16', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: '#166534' },
-  feedBtnText:{ fontSize: 12, color: '#22c55e', fontWeight: '600' },
+  heroText:    { flex: 1 },
+  heroName:    { fontSize: 20, fontWeight: '800', color: COLORS.text },
+  heroMeta:    { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
+  goalInHero:  { fontSize: 11, color: '#34d399', marginTop: 4 },
+  deadBadge:   { fontSize: 11, color: '#ef4444', marginTop: 4 },
+  feedBtn:     { backgroundColor: '#052e16', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: '#166534' },
+  feedBtnText: { fontSize: 12, color: '#22c55e', fontWeight: '600' },
 
   card: { backgroundColor: COLORS.bgCard, borderRadius: 12, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: COLORS.border },
   emotionRow:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 4 },
@@ -226,11 +321,28 @@ const styles = StyleSheet.create({
 
   quoteText: { fontSize: 13, color: COLORS.text, fontStyle: 'italic', lineHeight: 20 },
   desireText:{ fontSize: 13, color: '#fde68a', lineHeight: 20 },
+  goalText:  { fontSize: 13, color: '#6ee7b7', lineHeight: 20 },
   existText: { fontSize: 13, color: '#ddd6fe', fontStyle: 'italic', lineHeight: 20 },
+
+  // Relationships
+  valenceGroup: { marginBottom: 12 },
+  valenceLabel: { fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 },
+  relRow:     { marginBottom: 8, paddingLeft: 8 },
+  relHeader:  { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
+  relName:    { fontSize: 12, fontWeight: '600', color: COLORS.text },
+  relMeta:    { fontSize: 10, color: COLORS.textMuted },
+  relBarBg:   { height: 3, backgroundColor: '#1e293b', borderRadius: 2, marginBottom: 4, overflow: 'hidden' },
+  relBarFill: { height: 3, borderRadius: 2 },
+  relMemory:  { fontSize: 10, color: COLORS.textDim, fontStyle: 'italic', lineHeight: 14 },
 
   beliefRow: { flexDirection: 'row', marginBottom: 6, flexWrap: 'wrap' },
   beliefKey: { fontSize: 11, color: COLORS.textMuted, fontFamily: 'monospace' },
   beliefVal: { fontSize: 11, color: COLORS.text, flex: 1 },
+
+  // Episodic archive
+  archiveRow:  { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 8 },
+  archiveIcon: { fontSize: 10, color: '#475569', marginTop: 2 },
+  archiveText: { fontSize: 11, color: '#64748b', fontStyle: 'italic', flex: 1, lineHeight: 16 },
 
   memRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 7 },
   memDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#334155', marginTop: 6 },
