@@ -1,7 +1,7 @@
 /**
- * World v5 — population sparkline, world-event cinematic overlay, zone minimap.
- * The header now tracks population history; world events take over the screen;
- * a minimap shows zone balance at a glance.
+ * World v6 — Storm rain, soul departure on death, grief hearts, storm pulse.
+ * Rain streams loop endlessly in the Storm zone; entities leave a silver trail
+ * when they die; grief events float a broken heart upward from the mourner.
  */
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -112,6 +112,17 @@ const S_RAIN: [number, number][] = [
   [542,300],[560,328],[578,305],[595,332],[612,308],[630,338],[648,312],[665,340],[682,318],
 ]
 
+// ── Animated rain streams in Storm zone ──────────────────────────────────────
+// Deterministic layout so the pattern is stable across re-renders
+const RAIN_STREAMS = Array.from({ length: 22 }, (_, i) => ({
+  x:   530 + (i % 11) * 15.5 + (i < 11 ? 0 : 7.5),
+  dur: 600 + (i * 43) % 420,
+  phase: (i * 0.137) % 1,         // stagger starting position 0-1
+  w:   1 + (i % 3) * 0.5,
+  h:   10 + (i % 5) * 2,
+  op:  0.2 + (i % 5) * 0.07,
+}))
+
 // ── Building shapes ────────────────────────────────────────────────────────────
 function HouseShape({ x, y }: { x: number; y: number }) {
   return (
@@ -179,10 +190,12 @@ const INIT_TX    = -120
 const INIT_TY    = -30
 
 // ── Particle types ────────────────────────────────────────────────────────────
-interface Bubble  { id: number; x: number; y: number; text: string; color: string; anim: Animated.Value }
-interface Ripple  { id: number; x: number; y: number; scaleAnim: Animated.Value; opacityAnim: Animated.Value; color: string }
-interface Spark   { id: number; x: number; y: number; dx: number; dy: number; anim: Animated.Value; color: string }
-interface Firefly { id: number; x: number; baseY: number; anim: Animated.Value }
+interface Bubble    { id: number; x: number; y: number; text: string; color: string; anim: Animated.Value }
+interface Ripple    { id: number; x: number; y: number; scaleAnim: Animated.Value; opacityAnim: Animated.Value; color: string }
+interface Spark     { id: number; x: number; y: number; dx: number; dy: number; anim: Animated.Value; color: string }
+interface Firefly   { id: number; x: number; baseY: number; anim: Animated.Value }
+interface Soul      { id: number; x: number; y: number; dx: number; dy: number; anim: Animated.Value; color: string }
+interface GriefMark { id: number; x: number; y: number; anim: Animated.Value }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function WorldScreen() {
@@ -238,7 +251,7 @@ export default function WorldScreen() {
 
   // ── World event overlay ───────────────────────────────────────────────────
   const [worldEventText, setWorldEventText] = useState<string | null>(null)
-  const overlayAnim   = useRef(new Animated.Value(0)).current
+  const overlayAnim    = useRef(new Animated.Value(0)).current
   const lastWorldEvRef = useRef(-1)
 
   useEffect(() => {
@@ -265,6 +278,40 @@ export default function WorldScreen() {
     )
     loop.start()
     return () => loop.stop()
+  }, [])
+
+  // ── Storm zone breathing pulse ────────────────────────────────────────────
+  const stormPulse = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(stormPulse, { toValue: 1, duration: 1800, useNativeDriver: true }),
+        Animated.timing(stormPulse, { toValue: 0, duration: 2600, useNativeDriver: true }),
+      ])
+    )
+    loop.start()
+    return () => loop.stop()
+  }, [])
+
+  // ── Storm rain streams ────────────────────────────────────────────────────
+  const rainAnims = useRef(RAIN_STREAMS.map(() => new Animated.Value(0))).current
+  useEffect(() => {
+    const loops = RAIN_STREAMS.map((s, i) => {
+      const anim = rainAnims[i]
+      anim.setValue(s.phase)
+      // delay start by phase fraction of duration so streams are offset
+      let loop: Animated.CompositeAnimation
+      const startLoop = () => {
+        loop = Animated.loop(
+          Animated.timing(anim, { toValue: 1, duration: s.dur, useNativeDriver: true })
+        )
+        loop.start()
+      }
+      const delay = Math.round(s.phase * s.dur)
+      const t = setTimeout(startLoop, delay)
+      return () => { clearTimeout(t); loop?.stop() }
+    })
+    return () => loops.forEach(cleanup => cleanup())
   }, [])
 
   // ── Star twinkle ──────────────────────────────────────────────────────────
@@ -357,6 +404,65 @@ export default function WorldScreen() {
       Animated.timing(s.anim, { toValue: 1, duration: 800, useNativeDriver: true })
         .start(() => setSparks(prev => prev.filter(x => x.id !== s.id)))
     })
+  }, [liveEvents])
+
+  // ── Death soul departure ──────────────────────────────────────────────────
+  const [souls, setSouls] = useState<Soul[]>([])
+  const lastDeathRef = useRef(-1)
+  const nextSoulId   = useRef(0)
+  useEffect(() => {
+    const death = liveEvents.find(ev => ev.type === 'entity_died' || ev.type === 'death')
+    if (!death || death.id === lastDeathRef.current) return
+    lastDeathRef.current = death.id
+    const entity = entitiesRef.current.find(e => e.name === (death as any).name)
+    let cx: number, cy: number
+    if (entity) {
+      const pos = posRef.current[entity.id]
+      cx = pos ? (pos.x as any)._value : (REGION[entity.current_zone]?.x ?? 0) + ZW / 2
+      cy = pos ? (pos.y as any)._value : GND_Y + GND_H / 2
+    } else {
+      const zone = String((death as any).zone ?? (death as any).current_zone ?? 'Garden')
+      const r = REGION[zone] ?? REGION.Garden
+      cx = r.x + r.w / 2; cy = r.y + r.h / 2
+    }
+    const SOUL_COLORS = ['#94a3b8', '#cbd5e1', '#ffffff', '#e2e8f0', '#475569', '#f8fafc', '#64748b']
+    const newSouls: Soul[] = Array.from({ length: 7 }, (_, i) => {
+      const angle = -Math.PI * 0.5 + (i / 7 - 0.5) * Math.PI * 0.85
+      const dist  = 22 + i * 5
+      return {
+        id: nextSoulId.current++, x: cx, y: cy,
+        dx: Math.cos(angle) * dist, dy: Math.sin(angle) * dist,
+        anim: new Animated.Value(0),
+        color: SOUL_COLORS[i % SOUL_COLORS.length],
+      }
+    })
+    setSouls(prev => [...prev.slice(-14), ...newSouls])
+    newSouls.forEach(s => {
+      Animated.timing(s.anim, { toValue: 1, duration: 1400 + Math.random() * 400, useNativeDriver: true })
+        .start(() => setSouls(prev => prev.filter(x => x.id !== s.id)))
+    })
+  }, [liveEvents])
+
+  // ── Grief floating hearts ─────────────────────────────────────────────────
+  const [griefs, setGriefs] = useState<GriefMark[]>([])
+  const lastGriefRef = useRef(-1)
+  const nextGriefId  = useRef(0)
+  useEffect(() => {
+    const grief = liveEvents.find(ev => ev.type === 'entity_grief' || ev.type === 'grief')
+    if (!grief || grief.id === lastGriefRef.current) return
+    lastGriefRef.current = grief.id
+    const grieverName = String((grief as any).griever ?? '')
+    const entity = entitiesRef.current.find(e => e.name === grieverName)
+    let cx = 350, cy = GND_Y
+    if (entity) {
+      const pos = posRef.current[entity.id]
+      if (pos) { cx = (pos.x as any)._value; cy = (pos.y as any)._value }
+    }
+    const anim = new Animated.Value(0)
+    const gid  = nextGriefId.current++
+    setGriefs(prev => [...prev.slice(-3), { id: gid, x: cx, y: cy, anim }])
+    Animated.timing(anim, { toValue: 1, duration: 2200, useNativeDriver: true })
+      .start(() => setGriefs(prev => prev.filter(g => g.id !== gid)))
   }, [liveEvents])
 
   // ── Encounter ripple ──────────────────────────────────────────────────────
@@ -494,7 +600,6 @@ export default function WorldScreen() {
     lastOffset.current = { x: INIT_TX, y: INIT_TY }
   }
 
-  // Zone navigation
   const goToZone = (zone: string) => {
     const r = REGION[zone] ?? REGION.Garden
     const targetX = -(r.x + r.w / 2 - W / 2) * INIT_SCALE + 20
@@ -509,8 +614,8 @@ export default function WorldScreen() {
 
   const latestEvent = liveEvents[0] ?? null
   const pulseGlowOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.25, 0.72] })
+  const stormOpacity     = stormPulse.interpolate({ inputRange: [0, 1], outputRange: [0, 0.2] })
 
-  // Zone counts for minimap
   const zoneCounts = ZONES.reduce((acc, z) => {
     acc[z] = entities.filter(e => e.current_zone === z).length
     return acc
@@ -751,6 +856,20 @@ export default function WorldScreen() {
             }]} />
           ))}
 
+          {/* Storm animated rain streams */}
+          {RAIN_STREAMS.map((s, i) => (
+            <Animated.View key={`rs${i}`} style={[styles.rainStream, {
+              left: s.x, width: s.w, height: s.h, opacity: s.op,
+              transform: [
+                { translateY: rainAnims[i].interpolate({ inputRange: [0, 1], outputRange: [-15, H + 15] }) },
+                { rotate: '-12deg' },
+              ],
+            }]} />
+          ))}
+
+          {/* Storm breathing pulse */}
+          <Animated.View pointerEvents="none" style={[styles.stormPulse, { opacity: stormOpacity }]} />
+
           {/* Ripples */}
           {ripples.map(r => (
             <Animated.View key={r.id} style={[styles.ripple, {
@@ -813,6 +932,31 @@ export default function WorldScreen() {
                 { scale:      spark.anim.interpolate({ inputRange: [0,0.3,1], outputRange: [0.3,1.2,0.5] }) },
               ],
             }]} />
+          ))}
+
+          {/* Death soul departure */}
+          {souls.map(soul => (
+            <Animated.View key={soul.id} style={[styles.soul, {
+              left: soul.x - 2.5, top: soul.y - 2.5,
+              backgroundColor: soul.color,
+              opacity:   soul.anim.interpolate({ inputRange: [0, 0.2, 0.8, 1], outputRange: [0, 0.9, 0.5, 0] }),
+              transform: [
+                { translateX: soul.anim.interpolate({ inputRange: [0, 1], outputRange: [0, soul.dx] }) },
+                { translateY: soul.anim.interpolate({ inputRange: [0, 1], outputRange: [0, soul.dy] }) },
+                { scale:      soul.anim.interpolate({ inputRange: [0, 0.4, 1], outputRange: [0.2, 1, 0.4] }) },
+              ],
+            }]} />
+          ))}
+
+          {/* Grief floating hearts */}
+          {griefs.map(g => (
+            <Animated.View key={g.id} style={[styles.griefMark, {
+              left: g.x - 10, top: g.y - 30,
+              opacity:   g.anim.interpolate({ inputRange: [0, 0.1, 0.7, 1], outputRange: [0, 1, 0.65, 0] }),
+              transform: [{ translateY: g.anim.interpolate({ inputRange: [0, 1], outputRange: [0, -52] }) }],
+            }]}>
+              <Text style={styles.griefEmoji}>💔</Text>
+            </Animated.View>
           ))}
 
           {/* Thought bubbles */}
@@ -1016,11 +1160,27 @@ const styles = StyleSheet.create({
     backgroundColor: '#86efac',
     shadowColor: '#22c55e', shadowOpacity: 1, shadowRadius: 4, shadowOffset: { width: 0, height: 0 },
   },
+  rainStream: {
+    position: 'absolute',
+    backgroundColor: '#bfdbfe',
+    borderRadius: 1,
+  },
+  stormPulse: {
+    position: 'absolute',
+    left: ZW * 3, top: 0, width: ZW, height: H,
+    backgroundColor: '#2d0505',
+  },
   ripple: { position: 'absolute', width: 88, height: 88, borderRadius: 44, borderWidth: 2 },
   spark: {
     position: 'absolute', width: 6, height: 6, borderRadius: 3,
     shadowOpacity: 0.8, shadowRadius: 4, shadowOffset: { width: 0, height: 0 },
   },
+  soul: {
+    position: 'absolute', width: 5, height: 5, borderRadius: 2.5,
+    shadowColor: '#cbd5e1', shadowOpacity: 0.6, shadowRadius: 3, shadowOffset: { width: 0, height: 0 },
+  },
+  griefMark:  { position: 'absolute' },
+  griefEmoji: { fontSize: 14 },
 
   entityWrap:   { position: 'absolute', alignItems: 'center' },
   entityInner:  { alignItems: 'center' },
