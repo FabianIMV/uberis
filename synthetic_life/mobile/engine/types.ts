@@ -22,6 +22,15 @@ export interface EmotionalState {
   intensity: number
 }
 
+export interface RelationshipEntry {
+  name:       string
+  valence:    'friend' | 'rival' | 'family' | 'neutral'
+  intensity:  number   // 0–1; depth of the bond
+  encounters: number
+  last_tick:  number
+  key_memory: string   // most significant shared memory
+}
+
 export interface Entity {
   id:                   number
   name:                 string
@@ -34,15 +43,18 @@ export interface Entity {
   is_alive:             boolean
   last_thought:         string | null
   current_desire:       string | null
+  current_goal:         string | null   // persistent multi-tick goal
   existential_statement:string | null
   parent_a_id:          number | null
   parent_b_id:          number | null
   born_at:              string
-  // extended fields (always populated in standalone)
-  memory:   string[]
-  beliefs:  Record<string, string>
-  final_message: FinalMessage | null
-  died_at_tick:  number | null
+  // extended fields
+  memory:               string[]
+  memory_archive:       string[]   // episodic summaries of compressed old memories
+  beliefs:              Record<string, string>
+  relationships:        Record<string, RelationshipEntry>   // key = String(entity_id)
+  final_message:        FinalMessage | null
+  died_at_tick:         number | null
 }
 
 export interface FinalMessage {
@@ -88,4 +100,6 @@ export interface ThoughtResult {
   emotion_intensity:     number
   desire:                string
   existential_statement: string
+  goal_update:           string | null
+  goal_status:           'active' | 'achieved' | 'abandoned'
 }
