@@ -1,8 +1,8 @@
 /**
- * World v12 — Garden ground mist, Storm animated clouds.
- * Translucent mist strips drift at ground level in the Garden zone.
- * Dark cloud masses slowly traverse the Storm sky, giving the tempest
- * a sense of movement and depth.
+ * World v13 — Zone energy halos, entity selection relationship web.
+ * Each zone glows with a color and intensity that reflects the average
+ * energy of entities living there. Tapping an entity draws lines to all
+ * its relationship partners, color-coded by bond type.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -885,6 +885,17 @@ export default function WorldScreen() {
     return acc
   }, {} as Record<string, number>)
 
+  const zoneEnergyMap = useMemo(() => {
+    const map: Record<string, number> = {}
+    ZONES.forEach(z => {
+      const zEnts = entities.filter(e => e.current_zone === z)
+      map[z] = zEnts.length > 0
+        ? zEnts.reduce((s, e) => s + (e.energy ?? 50), 0) / zEnts.length
+        : 50
+    })
+    return map
+  }, [entities])
+
   const prophecy = useMemo(() => {
     if (entities.length === 0) return 'El mundo duerme...'
     if (entities.length < 3) return 'El mundo agoniza...'
@@ -1111,6 +1122,18 @@ export default function WorldScreen() {
             })}
           </Svg>
 
+          {/* Zone energy halos */}
+          {ZONES.map((zone, i) => {
+            const avgE = zoneEnergyMap[zone] ?? 50
+            const glowColor = avgE < 30 ? '#ef4444' : avgE < 55 ? '#f59e0b' : ZONE_COLOR[zone]
+            const glowOp    = avgE < 30 ? 0.09 : avgE > 70 ? 0.06 : 0.03
+            return (
+              <View key={`zh${zone}`} pointerEvents="none" style={[styles.zoneHalo, {
+                left: i * ZW, backgroundColor: glowColor, opacity: glowOp,
+              }]} />
+            )
+          })}
+
           {/* Zone labels */}
           {[
             { zone: 'Garden',  left: ZW * 0 + ZW/2 - 28, top: 16 },
@@ -1295,6 +1318,38 @@ export default function WorldScreen() {
               }]} />
             )
           })}
+
+          {/* Selection web — lines from selected entity to its relationship partners */}
+          {popup && (() => {
+            const posA = posRef.current[popup.id]
+            if (!posA) return null
+            const ax = (posA.x as any)._value as number
+            const ay = (posA.y as any)._value as number
+            const rels = (popup as any).relationships ?? {}
+            return Object.entries(rels).map(([name, rel]) => {
+              const target = entities.find(e => e.name === name)
+              if (!target) return null
+              const posB = posRef.current[target.id]
+              if (!posB) return null
+              const bx = (posB.x as any)._value as number
+              const by = (posB.y as any)._value as number
+              const dx = bx - ax, dy = by - ay
+              const len = Math.sqrt(dx * dx + dy * dy)
+              if (len < 4) return null
+              const ang = Math.atan2(dy, dx) * (180 / Math.PI)
+              const mx = (ax + bx) / 2, my = (ay + by) / 2
+              const valence = (rel as any).valence ?? 'neutral'
+              const color = valence === 'friend' ? '#34d399' : valence === 'family' ? '#a78bfa' : '#f87171'
+              return (
+                <View key={`sel-${name}`} style={[styles.selectionLine, {
+                  left: mx - len / 2, top: my - 2, width: len,
+                  backgroundColor: color,
+                  shadowColor: color,
+                  transform: [{ rotate: `${ang}deg` }],
+                }]} />
+              )
+            })
+          })()}
 
           {/* Entities */}
           {entities.map(entity => {
@@ -1632,6 +1687,11 @@ const styles = StyleSheet.create({
   auroraBand: { position: 'absolute', left: ZW * 2, width: ZW + 6, height: 8, borderRadius: 4 },
   mistStrip:  { position: 'absolute', left: -10, width: ZW + 20, height: 14, borderRadius: 7, backgroundColor: '#86efac' },
   stormCloud: { position: 'absolute', left: ZW * 3, backgroundColor: '#080404' },
+  zoneHalo:   { position: 'absolute', top: 0, width: ZW, height: H },
+  selectionLine: {
+    position: 'absolute', height: 4, borderRadius: 2,
+    shadowOpacity: 0.9, shadowRadius: 8, shadowOffset: { width: 0, height: 0 },
+  },
   griefMark:  { position: 'absolute' },
   griefEmoji: { fontSize: 14 },
   sleepMark:  { position: 'absolute' },
