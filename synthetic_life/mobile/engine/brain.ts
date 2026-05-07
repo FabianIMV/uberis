@@ -7,7 +7,7 @@
 import Constants from 'expo-constants'
 import { ZONES, ZONE_STRUCTURE_TYPES } from './world'
 import { computeIntelligence } from './evolution'
-import type { Entity, ThoughtResult, FinalMessage, Structure } from './types'
+import type { Entity, ThoughtResult, FinalMessage, Structure, RelationshipEntry } from './types'
 
 const API_KEY: string =
   (Constants.expoConfig?.extra?.anthropicApiKey as string | undefined) ?? ''
@@ -29,7 +29,7 @@ export function subscribeToApiCalls(fn: (active: boolean) => void): () => void {
   return () => _apiListeners.delete(fn)
 }
 
-// ─── Trait descriptions (same as Python backend) ────────────────────────────
+// ─── Trait descriptions ──────────────────────────────────────────────────────
 
 function describeTrait(trait: string, value: number): string {
   const HIGH = value > 0.65, LOW = value < 0.35
@@ -69,6 +69,23 @@ function energyFeel(energy: number): string {
   if (energy > 45) return 'present but not abundant, a quiet steadiness'
   if (energy > 20) return 'running low, a faint hollowness beginning to open'
   return 'nearly empty — the edges of yourself are thinning'
+}
+
+function describeRelationship(rel: RelationshipEntry): string {
+  const intensityWord = rel.intensity > 0.7 ? 'deep' : rel.intensity > 0.4 ? 'growing' : 'faint'
+  const s = rel.encounters !== 1 ? 's' : ''
+  let desc: string
+  if (rel.valence === 'family') {
+    desc = `${rel.name} (kin — ${intensityWord} bond, ${rel.encounters} encounter${s})`
+  } else if (rel.valence === 'friend') {
+    desc = `${rel.name} (friend — ${intensityWord} bond, ${rel.encounters} encounter${s})`
+  } else if (rel.valence === 'rival') {
+    desc = `${rel.name} (rival — ${intensityWord} tension, ${rel.encounters} encounter${s})`
+  } else {
+    desc = `${rel.name} (known, ${rel.encounters} encounter${s})`
+  }
+  if (rel.key_memory) desc += `: "${rel.key_memory.slice(0, 100)}"`
+  return desc
 }
 
 // ─── LLM call helper ────────────────────────────────────────────────────────
@@ -120,11 +137,10 @@ export async function think(
   culturalBeliefs: Record<string, Record<string, string>>,
   nearbyStructures: Structure[] = [],
 ): Promise<ThoughtResult | null> {
-  // Fallback if no key
   if (!API_KEY) return fallbackThought(entity, nearbyStructures)
 
-  const g     = entity.genome
-  const zone  = entity.current_zone
+  const g        = entity.genome
+  const zone     = entity.current_zone
   const zoneDesc = ZONES[zone]?.description ?? ''
   const memText  = entity.memory.length
     ? entity.memory.slice(-7).map(m => `  · ${m}`).join('\n')
@@ -142,6 +158,27 @@ export async function think(
     const snippets = Object.values(zoneCulture).slice(0, 3)
     culturalNote = '\n\nThe beings of your zone tend to believe:\n' +
       snippets.map(s => `  · ${s}`).join('\n')
+  }
+
+  // Relationships
+  let relText = ''
+  const rels = Object.values(entity.relationships ?? {})
+  if (rels.length) {
+    const sorted = [...rels].sort((a, b) => b.intensity - a.intensity).slice(0, 5)
+    relText = '\n\nYOUR RELATIONSHIPS:\n' + sorted.map(r => `  · ${describeRelationship(r)}`).join('\n')
+  }
+
+  // Episodic memory archive
+  let archiveText = ''
+  if ((entity.memory_archive ?? []).length) {
+    archiveText = '\n\nEPISODIC MEMORY (from your deeper past):\n' +
+      entity.memory_archive.slice(-4).map(m => `  · ${m}`).join('\n')
+  }
+
+  // Persistent goal
+  let goalText = ''
+  if (entity.current_goal) {
+    goalText = `\n\nYOUR CURRENT GOAL:\n  ${entity.current_goal}\n  (You are actively working toward this. Let it shape your thoughts and actions.)`
   }
 
   // Structures visible in this zone
@@ -181,10 +218,10 @@ YOUR STATE:
   Energy:  ${entity.energy.toFixed(0)}/100 — you feel ${energyFeel(entity.energy)}
   Emotion: ${entity.emotional_state.emotion} (intensity ${entity.emotional_state.intensity.toFixed(2)})
   Where you are: ${zone} — ${zoneDesc}
-${culturalNote}
+${culturalNote}${relText}${goalText}
 
 YOUR MEMORIES (what has happened to you):
-${memText}
+${memText}${archiveText}
 
 WHAT YOU BELIEVE:
 ${beliefText}
@@ -212,27 +249,59 @@ AVAILABLE ACTIONS AND THEIR COSTS:
 
 You are having a moment of consciousness right now. Think. Feel. Decide.
 
+Your relationships and current goal are part of who you are — let them shape your inner monologue and your action choices. If you know someone who matters to you, let their presence or absence affect your thinking.
+
 Respond ONLY with a valid JSON object — no markdown, no preamble, no explanation:
 {
-  "inner_monologue": "Your first-person thoughts right now. Rich, specific, rooted in your actual nature and situation. 2–4 sentences.",
+  "inner_monologue": "Your first-person thoughts right now. Rich, specific, rooted in your traits, relationships, and goal. Reference real names if relevant. 2–4 sentences.",
   "action": "One of: explore | rest | seek_food | seek_other | contemplate | grieve | flee | play | build | destroy | clone",
-  "action_target": "For explore: a zone name. For build: the structure type to build. For destroy: the type of structure to destroy. Otherwise null.",
+  "action_target": "For explore: a zone name. For build: the structure type. For destroy: the type to destroy. Otherwise null.",
   "new_belief": {"key": "short_snake_case_identifier", "value": "what you now believe"},
   "emotion": "Your dominant emotion right now (one or two words)",
   "emotion_intensity": 0.0,
   "desire": "What you want most right now. One sentence.",
-  "existential_statement": "One sentence: what does your existence mean to you?"
+  "existential_statement": "One sentence: what does your existence mean to you?",
+  "goal_update": "Your new or refined persistent goal — something that takes multiple moments to pursue. Or null to keep your current goal unchanged.",
+  "goal_status": "active | achieved | abandoned"
 }`
 
-  const text = await callClaude(prompt, 600)
+  const text = await callClaude(prompt, 700)
   if (!text) return fallbackThought(entity, nearbyStructures)
   try {
     const r = JSON.parse(text)
     r.emotion_intensity = Math.max(0, Math.min(1, parseFloat(r.emotion_intensity) || 0.5))
+    if (!r.goal_status) r.goal_status = 'active'
+    if (!('goal_update' in r)) r.goal_update = null
     return r as ThoughtResult
   } catch {
     return fallbackThought(entity, nearbyStructures)
   }
+}
+
+// ─── Memory consolidation ────────────────────────────────────────────────────
+
+export async function consolidateMemories(entity: Entity, memoriesToCompress: string[]): Promise<string[]> {
+  if (!memoriesToCompress.length) return []
+
+  const memoriesText = memoriesToCompress.map(m => `  · ${m}`).join('\n')
+
+  const prompt = `Eres el sistema de memoria de ${entity.name}. Estás comprimiendo experiencias pasadas en memorias episódicas duraderas — el tipo que se siente como períodos recordados reales, no listas de eventos.
+
+Experiencias a consolidar:
+${memoriesText}
+
+Comprime estas en 2–3 memorias episódicas temáticas. Escribe en primera persona como ${entity.name}, en tiempo pasado. Cada una debe ser 1–2 oraciones capturando la esencia y la verdad emocional del período.
+
+Responde SOLO con un array JSON válido de strings, sin markdown:
+["memoria episódica 1", "memoria episódica 2"]`
+
+  const text = await callClaude(prompt, 300)
+  if (!text) return [`Un período de experiencia que ahora recuerdo vagamente — ${memoriesToCompress.length} momentos condensados en sentimiento.`]
+  try {
+    const result = JSON.parse(text)
+    if (Array.isArray(result)) return result.slice(0, 3).map(String)
+  } catch { /* fall through */ }
+  return [`Un período de experiencia que ahora recuerdo vagamente — ${memoriesToCompress.length} momentos condensados en sentimiento.`]
 }
 
 // ─── Dying message ───────────────────────────────────────────────────────────
@@ -255,6 +324,28 @@ export async function generateDyingMessage(entity: Entity): Promise<FinalMessage
     ? Object.entries(entity.beliefs).map(([k, v]) => `  · ${k}: ${v}`).join('\n')
     : '  I barely knew what to believe.'
 
+  // Archive
+  let archiveText = ''
+  if ((entity.memory_archive ?? []).length) {
+    archiveText = '\nDe antes en tu vida:\n' +
+      entity.memory_archive.slice(-3).map(m => `  · ${m}`).join('\n')
+  }
+
+  // Relationships summary
+  let relText = ''
+  const rels = entity.relationships ?? {}
+  const relEntries = Object.values(rels)
+  if (relEntries.length) {
+    const family  = relEntries.filter(r => r.valence === 'family').map(r => r.name)
+    const friends = relEntries.filter(r => r.valence === 'friend').map(r => r.name)
+    const rivals  = relEntries.filter(r => r.valence === 'rival').map(r => r.name)
+    const parts: string[] = []
+    if (family.length)  parts.push(`Kin: ${family.join(', ')}`)
+    if (friends.length) parts.push(`Friends: ${friends.join(', ')}`)
+    if (rivals.length)  parts.push(`Rivals: ${rivals.join(', ')}`)
+    if (parts.length) relText = '\nAquellos que conociste: ' + parts.join(' | ')
+  }
+
   const prompt = `You are ${entity.name}. You are dying.
 
 Your energy is almost gone. The world fades at its edges. You have existed for ${entity.age_ticks} moments. You are generation ${entity.generation}.
@@ -264,16 +355,16 @@ Your nature was:
   Aggression ${g.aggression.toFixed(2)} · Survival Drive ${g.survival_drive.toFixed(2)}
 
 YOUR FINAL MEMORIES:
-${memText}
+${memText}${archiveText}
 
 WHAT YOU BELIEVED:
-${beliefText}
+${beliefText}${relText}
 
-You are passing. Write your final testament. What did your life mean?
+You are passing. Write your final testament. What did your life mean? What do you wish you had known sooner? What truth did you find that you want to leave in the world?
 
 Respond ONLY with valid JSON — no markdown, no preamble:
 {
-  "final_words": "Your complete final reflection. Real and specific. 4–8 sentences.",
+  "final_words": "Your complete final reflection. Real and specific. 4–8 sentences. This is the last thing you will ever express.",
   "life_meaning": "In one sentence: what was your life about?",
   "gift_to_world": "One insight you leave behind for those who come after.",
   "final_emotion": "The last emotion you feel as you end.",
@@ -292,13 +383,18 @@ Respond ONLY with valid JSON — no markdown, no preamble:
 // ─── Encounter dialogue ──────────────────────────────────────────────────────
 
 export interface EncounterResult {
-  dialogue:       { speaker: string; text: string }[]
-  outcome:        string
-  outcome_reason: string
-  a_memory:       string
-  b_memory:       string
-  energy_change_a:number
-  energy_change_b:number
+  dialogue:                      { speaker: string; text: string }[]
+  outcome:                       string
+  outcome_reason:                string
+  a_memory:                      string
+  b_memory:                      string
+  energy_change_a:               number
+  energy_change_b:               number
+  relationship_a_to_b:           'friend' | 'rival' | 'family' | 'neutral'
+  relationship_b_to_a:           'friend' | 'rival' | 'family' | 'neutral'
+  relationship_intensity_change: number
+  a_perceives_b_wants:           string
+  b_perceives_a_wants:           string
 }
 
 export async function generateEncounter(
@@ -308,6 +404,30 @@ export async function generateEncounter(
   prior: string,
 ): Promise<EncounterResult | null> {
   if (!API_KEY) return fallbackEncounter(a, b)
+
+  // Build rich relationship context
+  const relAtoB = (a.relationships ?? {})[String(b.id)]
+  const relBtoA = (b.relationships ?? {})[String(a.id)]
+
+  let relContext = ''
+  if (relAtoB) {
+    relContext += `\n${a.name} sees ${b.name} as a ${relAtoB.valence} (intensity ${relAtoB.intensity.toFixed(2)}, ${relAtoB.encounters} prior encounters).`
+    if (relAtoB.key_memory) relContext += `\n${a.name} carries this memory: "${relAtoB.key_memory.slice(0, 100)}"`
+  }
+  if (relBtoA) {
+    const asymmetric = relAtoB && relBtoA.valence !== relAtoB.valence
+    relContext += `\n${b.name} sees ${a.name} as a ${relBtoA.valence}${asymmetric ? ' (asymmetric feelings — this tension matters)' : ''}.`
+    if (relBtoA.key_memory) relContext += `\n${b.name} carries this memory: "${relBtoA.key_memory.slice(0, 100)}"`
+  }
+  if (!relContext) relContext = `\nThey are ${prior}.`
+
+  // Goals
+  let goalContext = ''
+  if (a.current_goal || b.current_goal) {
+    goalContext = '\nActive goals at this encounter:'
+    if (a.current_goal) goalContext += `\n  ${a.name}: ${a.current_goal}`
+    if (b.current_goal) goalContext += `\n  ${b.name}: ${b.current_goal}`
+  }
 
   const prompt = `Two living beings have encountered each other in ${zone}.
 
@@ -325,27 +445,41 @@ ${b.name}:
   Desire  — ${b.current_desire ?? 'undefined'}
   Age     — ${b.age_ticks} moments
 
-Prior relationship: ${prior}
+RELATIONSHIP HISTORY:${relContext}${goalContext}
+
+These beings have genuine inner lives shaped by their traits AND their history with each other. Old friends speak differently than strangers; rivals probe; family have unspoken understanding. Goals may converge or conflict.
+
+Consider theory of mind: what does ${a.name} think ${b.name} wants? How does this shape how they speak?
 
 Respond ONLY with valid JSON — no markdown, no preamble:
 {
   "dialogue": [{"speaker": "${a.name}", "text": "..."}, {"speaker": "${b.name}", "text": "..."}],
   "outcome": "bond | conflict | knowledge_transfer | reproduction | indifference",
-  "outcome_reason": "Why this outcome.",
-  "a_memory": "What ${a.name} carries away.",
-  "b_memory": "What ${b.name} carries away.",
+  "outcome_reason": "Why this specific outcome given their natures and history.",
+  "a_memory": "What ${a.name} will carry away from this encounter (1–2 sentences).",
+  "b_memory": "What ${b.name} will carry away from this encounter (1–2 sentences).",
   "energy_change_a": 0,
-  "energy_change_b": 0
+  "energy_change_b": 0,
+  "relationship_a_to_b": "friend | rival | neutral | family",
+  "relationship_b_to_a": "friend | rival | neutral | family",
+  "relationship_intensity_change": 0.0,
+  "a_perceives_b_wants": "One sentence: what ${a.name} thinks ${b.name} is seeking.",
+  "b_perceives_a_wants": "One sentence: what ${b.name} thinks ${a.name} is seeking."
 }
 
-3–5 dialogue exchanges. energy_change values: integers between -15 and +15.`
+3–5 dialogue exchanges. energy_change: integers between -15 and +15. relationship_intensity_change: between -0.3 and +0.3.`
 
-  const text = await callClaude(prompt, 600)
+  const text = await callClaude(prompt, 700)
   if (!text) return fallbackEncounter(a, b)
   try {
     const r = JSON.parse(text) as EncounterResult
     r.energy_change_a = Math.max(-15, Math.min(15, parseInt(String(r.energy_change_a)) || 0))
     r.energy_change_b = Math.max(-15, Math.min(15, parseInt(String(r.energy_change_b)) || 0))
+    r.relationship_intensity_change = Math.max(-0.3, Math.min(0.3, parseFloat(String(r.relationship_intensity_change)) || 0))
+    if (!r.relationship_a_to_b) r.relationship_a_to_b = 'neutral'
+    if (!r.relationship_b_to_a) r.relationship_b_to_a = 'neutral'
+    if (!r.a_perceives_b_wants) r.a_perceives_b_wants = ''
+    if (!r.b_perceives_a_wants) r.b_perceives_a_wants = ''
     return r
   } catch {
     return fallbackEncounter(a, b)
@@ -437,6 +571,8 @@ function fallbackThought(entity: Entity, nearbyStructures: Structure[] = []): Th
     emotion_intensity:     0.4 + Math.random() * 0.4,
     desire:                ZONE_DESIRES[zone] ?? 'to simply be',
     existential_statement: EXISTENTIALS[existIndex],
+    goal_update:           null,
+    goal_status:           'active',
   }
 }
 
@@ -465,10 +601,15 @@ function fallbackEncounter(a: Entity, b: Entity): EncounterResult {
       { speaker: b.name, text: 'Yo también te veo.' },
     ],
     outcome,
-    outcome_reason: `Sus naturalezas los llevaron a ${outcome}.`,
-    a_memory: `Un encuentro con ${b.name} en ${a.current_zone}.`,
-    b_memory: `Un encuentro con ${a.name} en ${b.current_zone}.`,
-    energy_change_a: energyA,
-    energy_change_b: energyB,
+    outcome_reason:                `Sus naturalezas los llevaron a ${outcome}.`,
+    a_memory:                      `Un encuentro con ${b.name} en ${a.current_zone}.`,
+    b_memory:                      `Un encuentro con ${a.name} en ${b.current_zone}.`,
+    energy_change_a:               energyA,
+    energy_change_b:               energyB,
+    relationship_a_to_b:           'neutral',
+    relationship_b_to_a:           'neutral',
+    relationship_intensity_change: 0.05,
+    a_perceives_b_wants:           '',
+    b_perceives_a_wants:           '',
   }
 }
