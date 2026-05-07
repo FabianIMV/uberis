@@ -1,9 +1,9 @@
 /**
- * World v21 — Generation gold tint, entity idle animations.
- * Entity core color blends toward amber/gold based on generation,
- * letting high-lineage beings visually stand out. Low-energy entities
- * gently sway left-right (a subtle idle animation) to indicate they
- * are still alive but struggling.
+ * World v22 — Rotating census ticker, entity mood rings.
+ * The header subtitle cycles through world statistics every 4 seconds
+ * (population → avg energy → max generation → most populous zone).
+ * Each entity gets a spinning mood ring: speed and color reflect their
+ * current emotional state — joy spins fast, calm drifts slow.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -310,6 +310,25 @@ export default function WorldScreen() {
     }
   }, [worldState.current_tick, entities.length])
 
+  // ── Census ticker ─────────────────────────────────────────────────────────
+  const [censusIdx, setCensusIdx] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setCensusIdx(i => (i + 1) % 4), 4000)
+    return () => clearInterval(id)
+  }, [])
+  const censusLabel = useMemo(() => {
+    if (entities.length === 0) return `t${worldState.current_tick}`
+    const avgE = Math.round(entities.reduce((s, e) => s + (e.energy ?? 50), 0) / entities.length)
+    const maxGen = Math.max(...entities.map(e => e.generation ?? 0))
+    switch (censusIdx % 4) {
+      case 0: return `${entities.length} vivos · t${worldState.current_tick}`
+      case 1: return `energía media: ${avgE}`
+      case 2: return `generación máx: G${maxGen}`
+      case 3: return `${ZONE_NAME_ES[dominantZone ?? 'Garden']} domina`
+      default: return `t${worldState.current_tick}`
+    }
+  }, [censusIdx, entities, worldState.current_tick, dominantZone])
+
   // ── World event overlay ───────────────────────────────────────────────────
   const [worldEventText, setWorldEventText] = useState<string | null>(null)
   const overlayAnim    = useRef(new Animated.Value(0)).current
@@ -349,6 +368,16 @@ export default function WorldScreen() {
         Animated.timing(hungerPulse, { toValue: 1, duration: 650, useNativeDriver: true }),
         Animated.timing(hungerPulse, { toValue: 0, duration: 650, useNativeDriver: true }),
       ])
+    )
+    loop.start()
+    return () => loop.stop()
+  }, [])
+
+  // ── Mood ring rotation anim (shared base, speed modified per emotion) ───
+  const moodRingSpin = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(moodRingSpin, { toValue: 1, duration: 3200, useNativeDriver: true })
     )
     loop.start()
     return () => loop.stop()
@@ -1124,7 +1153,7 @@ export default function WorldScreen() {
         <View style={styles.headerLeft}>
           <Text style={styles.headerTitle}>Uberis</Text>
           <View style={styles.headerSubRow}>
-            <Text style={styles.headerSub}>{entities.length} vivos · t{worldState.current_tick}</Text>
+            <Text style={styles.headerSub}>{censusLabel}</Text>
             <View style={styles.sparklineWrap}>
               <Sparkline data={popHistory} color="#22d3ee" w={52} h={16} />
             </View>
@@ -1648,6 +1677,23 @@ export default function WorldScreen() {
             return (
               <Animated.View key={entity.id} style={[styles.entityWrap, { left: pos.x, top: pos.y }]}>
                 <Pressable onPress={() => setPopup(p => p?.id === entity.id ? null : entity)} style={styles.entityInner}>
+                  <Animated.View pointerEvents="none" style={[styles.moodRing, {
+                    width: sz + 12, height: sz + 12, borderRadius: (sz + 12) / 2,
+                    top: -szH - 6, left: -szH - 6,
+                    borderColor: color + '88',
+                    transform: [{
+                      rotate: moodRingSpin.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: ['0deg',
+                          entity.emotional_state?.emotion === 'joy' || entity.emotional_state?.emotion === 'excited'
+                            ? '720deg'
+                            : entity.emotional_state?.emotion === 'fearful' || entity.emotional_state?.emotion === 'anxious'
+                            ? '-360deg'
+                            : '180deg'],
+                      }),
+                    }],
+                    opacity: energy > 25 ? 0.35 : 0.15,
+                  }]} />
                   {((entity.age_ticks ?? 0) >= 50 || entity.generation >= 5) && (
                     <Animated.View style={[styles.elderRing, {
                       width: sz + 26, height: sz + 26, borderRadius: (sz + 26) / 2,
@@ -2126,6 +2172,9 @@ const styles = StyleSheet.create({
 
   entityWrap:   { position: 'absolute', alignItems: 'center' },
   entityInner:  { alignItems: 'center' },
+  moodRing: {
+    position: 'absolute', borderWidth: 1, borderStyle: 'dashed',
+  },
   elderRing: {
     position: 'absolute', borderWidth: 1.5, borderColor: '#fbbf24', borderStyle: 'dashed',
     shadowColor: '#fbbf24', shadowOpacity: 0.7, shadowRadius: 6, shadowOffset: { width: 0, height: 0 },
