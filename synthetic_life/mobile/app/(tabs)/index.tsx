@@ -1,9 +1,9 @@
 /**
- * World v25 — Proximity bond hearts, world event history log.
- * When two entities with a family/friend bond are close on screen,
- * a tiny heart icon appears between them. The stats panel gains a
- * scrollable event history showing the last 5 world events with
- * timestamps and icons — a chronicle of the simulation's story.
+ * World v26 — Organic movement overhaul.
+ * Replaces chaotic simultaneous teleporting with slow, staggered,
+ * mostly-local drift. 80% of moves are small ±20px nudges; only 20%
+ * are full zone wanders. Move checks stagger per-entity so they never
+ * all lurch at once. Low-energy entities barely move.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -995,18 +995,18 @@ export default function WorldScreen() {
     const midX = (axV + bxV) / 2
     const midY = (ayV + byV) / 2
     Animated.parallel([
-      Animated.timing(posA.x, { toValue: midX - 14, duration: 900, useNativeDriver: false }),
-      Animated.timing(posA.y, { toValue: midY,      duration: 900, useNativeDriver: false }),
-      Animated.timing(posB.x, { toValue: midX + 4,  duration: 900, useNativeDriver: false }),
-      Animated.timing(posB.y, { toValue: midY,      duration: 900, useNativeDriver: false }),
+      Animated.timing(posA.x, { toValue: midX - 14, duration: 2000, useNativeDriver: false }),
+      Animated.timing(posA.y, { toValue: midY,      duration: 2000, useNativeDriver: false }),
+      Animated.timing(posB.x, { toValue: midX + 4,  duration: 2000, useNativeDriver: false }),
+      Animated.timing(posB.y, { toValue: midY,      duration: 2000, useNativeDriver: false }),
     ]).start(() => {
       const zA = entitiesRef.current.find(e => e.id === idA)?.current_zone ?? 'Garden'
       const zB = entitiesRef.current.find(e => e.id === idB)?.current_zone ?? 'Garden'
       Animated.parallel([
-        Animated.timing(posA.x, { toValue: randomInRegion(zA).x, duration: 1400, useNativeDriver: false }),
-        Animated.timing(posA.y, { toValue: randomInRegion(zA).y, duration: 1400, useNativeDriver: false }),
-        Animated.timing(posB.x, { toValue: randomInRegion(zB).x, duration: 1400, useNativeDriver: false }),
-        Animated.timing(posB.y, { toValue: randomInRegion(zB).y, duration: 1400, useNativeDriver: false }),
+        Animated.timing(posA.x, { toValue: randomInRegion(zA).x, duration: 3500, useNativeDriver: false }),
+        Animated.timing(posA.y, { toValue: randomInRegion(zA).y, duration: 3500, useNativeDriver: false }),
+        Animated.timing(posB.x, { toValue: randomInRegion(zB).x, duration: 3500, useNativeDriver: false }),
+        Animated.timing(posB.y, { toValue: randomInRegion(zB).y, duration: 3500, useNativeDriver: false }),
       ]).start()
     })
     const valA  = (enc as any).relationship_a_to_b ?? 'neutral'
@@ -1037,31 +1037,71 @@ export default function WorldScreen() {
     makeRipple(280)
   }, [liveEvents])
 
-  // ── Wandering ─────────────────────────────────────────────────────────────
+  // ── Organic wandering — staggered per-entity, mostly local drift ────────
+  const wanderTimers = useRef<Record<number, ReturnType<typeof setTimeout>>>({})
   useEffect(() => {
-    const id = setInterval(() => {
-      entitiesRef.current.forEach(entity => {
-        const pos = posRef.current[entity.id]
-        if (!pos) return
-        // Emit trail echo at current position before moving
-        if (Math.random() < 0.4) {
-          const ex = (pos.x as any)._value as number
-          const ey = (pos.y as any)._value as number
-          const color = '#94a3b8'
+    const doWander = (entityId: number) => {
+      const entity = entitiesRef.current.find(e => e.id === entityId)
+      const pos = posRef.current[entityId]
+      if (!entity || !pos) return
+
+      const energy = entity.energy ?? 50
+      // Tired entities rest longer between moves
+      const restMs = energy < 25
+        ? 9000 + Math.random() * 7000   // exhausted: 9-16s rest
+        : energy < 50
+        ? 6000 + Math.random() * 4000   // tired: 6-10s rest
+        : 4000 + Math.random() * 3000   // normal/energetic: 4-7s rest
+
+      const isLocalDrift = Math.random() < 0.78
+      let targetX: number, targetY: number
+
+      if (isLocalDrift) {
+        const cx = (pos.x as any)._value as number
+        const cy = (pos.y as any)._value as number
+        const r = REGION[entity.current_zone] ?? REGION.Garden
+        const range = energy < 25 ? 10 : energy > 65 ? 28 : 18
+        targetX = Math.max(r.x + 6, Math.min(r.x + r.w - 6, cx + (Math.random() - 0.5) * range * 2))
+        targetY = Math.max(r.y + 4, Math.min(r.y + r.h - 4, cy + (Math.random() - 0.5) * range * 2))
+      } else {
+        // Full zone wander — leave a trail echo
+        const cx = (pos.x as any)._value as number
+        const cy = (pos.y as any)._value as number
+        if (Math.random() < 0.45) {
           const tanim = new Animated.Value(1)
           const tid = nextTrailId.current++
-          setTrailEchoes(prev => [...prev.slice(-18), { id: tid, x: ex, y: ey, color, anim: tanim }])
+          setTrailEchoes(prev => [...prev.slice(-18), { id: tid, x: cx, y: cy, color: '#94a3b8', anim: tanim }])
           Animated.timing(tanim, { toValue: 0, duration: 2200, useNativeDriver: true })
             .start(() => setTrailEchoes(prev => prev.filter(t => t.id !== tid)))
         }
         const p = randomInRegion(entity.current_zone)
-        Animated.parallel([
-          Animated.timing(pos.x, { toValue: p.x, duration: 2200, useNativeDriver: false }),
-          Animated.timing(pos.y, { toValue: p.y, duration: 2200, useNativeDriver: false }),
-        ]).start()
-      })
-    }, 2800)
-    return () => clearInterval(id)
+        targetX = p.x; targetY = p.y
+      }
+
+      const moveDur = isLocalDrift
+        ? 3200 + Math.random() * 1800   // local: 3.2-5s (slow, smooth)
+        : 5500 + Math.random() * 2500   // zone:  5.5-8s (very smooth)
+
+      Animated.parallel([
+        Animated.timing(pos.x, { toValue: targetX, duration: moveDur, useNativeDriver: false }),
+        Animated.timing(pos.y, { toValue: targetY, duration: moveDur, useNativeDriver: false }),
+      ]).start()
+
+      wanderTimers.current[entityId] = setTimeout(() => doWander(entityId), restMs)
+    }
+
+    // Stagger initial launch over 4 seconds so they don't all start together
+    entitiesRef.current.forEach((entity, i) => {
+      wanderTimers.current[entity.id] = setTimeout(
+        () => doWander(entity.id),
+        Math.random() * 4000
+      )
+    })
+
+    return () => {
+      Object.values(wanderTimers.current).forEach(t => clearTimeout(t))
+      wanderTimers.current = {}
+    }
   }, [])
 
   // ── Pan responder ─────────────────────────────────────────────────────────
