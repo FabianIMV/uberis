@@ -1,6 +1,6 @@
 /**
- * Pantalla Mundo — mapa rico con biomas detallados,
- * entidades siempre en movimiento, construcción corregida, popup interactivo.
+ * World — panoramic horizontal landscape: Garden → Archive → Void → Storm.
+ * Zones are terrain regions of a single continuous world, not divided boxes.
  */
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -20,17 +20,20 @@ import { useSimulation } from '../../context/SimulationContext'
 import { COLORS, ZONE_COLOR, emotionColor } from '../../constants/theme'
 import type { Entity } from '../../engine/types'
 
-// ── Canvas constants ──────────────────────────────────────────────────────────
-const CANVAS = 700
-const HALF   = CANVAS / 2
-const NODE   = 20
-const NODE_H = NODE / 2
+// ── Canvas ────────────────────────────────────────────────────────────────────
+const W     = 700   // canvas width
+const H     = 700   // canvas height
+const ZW    = W / 4 // 175px per zone
+
+// Entity spawn regions — horizontal bands near the ground
+const GND_Y = 385
+const GND_H = 80
 
 const REGION: Record<string, { x: number; y: number; w: number; h: number }> = {
-  Garden:  { x: 0,   y: 0,   w: 348, h: 348 },
-  Void:    { x: 352, y: 0,   w: 348, h: 348 },
-  Archive: { x: 0,   y: 352, w: 348, h: 348 },
-  Storm:   { x: 352, y: 352, w: 348, h: 348 },
+  Garden:  { x: 0,      y: GND_Y, w: ZW,   h: GND_H },
+  Archive: { x: ZW,     y: GND_Y, w: ZW,   h: GND_H },
+  Void:    { x: ZW * 2, y: GND_Y, w: ZW,   h: GND_H },
+  Storm:   { x: ZW * 3, y: GND_Y, w: ZW,   h: GND_H },
 }
 
 const ZONE_NAME_ES: Record<string, string> = {
@@ -40,104 +43,74 @@ const ZONE_NAME_ES: Record<string, string> = {
 // ── Build types ───────────────────────────────────────────────────────────────
 type BuildType = 'house' | 'rock' | 'fire' | 'tree'
 interface Building { id: number; type: BuildType; x: number; y: number }
-
-const BUILD_LABEL: Record<BuildType, string> = {
-  house: 'Casa', rock: 'Roca', fire: 'Fogata', tree: 'Árbol',
-}
-const BUILD_EMOJI: Record<BuildType, string> = {
-  house: '🏠', rock: '🪨', fire: '🔥', tree: '🌲',
-}
-
-// ── Static world data (pre-computed to avoid per-render randomness) ────────────
-const GARDEN_TREES_A: [number,number][] = [
-  [55,90],[80,70],[105,95],[130,75],[158,88],[55,140],[88,160],
-]
-const GARDEN_TREES_B: [number,number][] = [
-  [220,60],[245,80],[268,55],[290,75],[310,58],[330,82],[200,110],
-]
-const GARDEN_TREES_C: [number,number][] = [
-  [35,280],[62,300],[190,260],[215,280],[285,310],[310,285],[165,310],
-]
-const GARDEN_FLOWERS: { cx:number; cy:number; fill:string }[] = [
-  { cx:45,  cy:200, fill:'#86efac' },
-  { cx:72,  cy:222, fill:'#f9a8d4' },
-  { cx:155, cy:130, fill:'#fbbf24' },
-  { cx:180, cy:292, fill:'#a7f3d0' },
-  { cx:260, cy:202, fill:'#f472b6' },
-  { cx:318, cy:160, fill:'#6ee7b7' },
-  { cx:100, cy:240, fill:'#fbbf24' },
-  { cx:240, cy:140, fill:'#86efac' },
-]
-const VOID_STARS: { cx:number; cy:number; r:number; op:number }[] = [
-  {cx:382,cy:18,r:1.8,op:0.75},{cx:412,cy:42,r:1.2,op:0.65},{cx:445,cy:20,r:2,op:0.8},
-  {cx:475,cy:58,r:1.5,op:0.7},{cx:506,cy:33,r:1,op:0.6},{cx:535,cy:55,r:1.8,op:0.75},
-  {cx:562,cy:22,r:1.2,op:0.65},{cx:592,cy:48,r:1.5,op:0.7},{cx:624,cy:33,r:2,op:0.8},
-  {cx:660,cy:58,r:1,op:0.6},{cx:390,cy:82,r:1.5,op:0.7},{cx:424,cy:112,r:1,op:0.6},
-  {cx:458,cy:78,r:1.8,op:0.75},{cx:492,cy:102,r:1.2,op:0.65},{cx:526,cy:86,r:2,op:0.8},
-  {cx:560,cy:108,r:1.5,op:0.7},{cx:598,cy:130,r:1,op:0.6},{cx:634,cy:100,r:1.8,op:0.75},
-  {cx:672,cy:76,r:1.2,op:0.65},{cx:416,cy:152,r:1.5,op:0.7},{cx:454,cy:178,r:1,op:0.6},
-  {cx:490,cy:145,r:2,op:0.8},{cx:528,cy:168,r:1.5,op:0.7},{cx:563,cy:152,r:1,op:0.6},
-  {cx:598,cy:178,r:1.8,op:0.75},{cx:634,cy:155,r:1.2,op:0.65},{cx:670,cy:140,r:1.5,op:0.7},
-  {cx:390,cy:198,r:1,op:0.6},{cx:424,cy:218,r:1.8,op:0.75},{cx:460,cy:202,r:1.2,op:0.65},
-  {cx:495,cy:225,r:1.5,op:0.7},{cx:532,cy:208,r:1,op:0.6},{cx:568,cy:232,r:2,op:0.8},
-  {cx:605,cy:215,r:1.5,op:0.7},{cx:640,cy:238,r:1,op:0.6},{cx:408,cy:268,r:1.8,op:0.75},
-  {cx:446,cy:256,r:1.2,op:0.65},{cx:484,cy:278,r:1.5,op:0.7},{cx:522,cy:260,r:1,op:0.6},
-  {cx:560,cy:278,r:1.8,op:0.75},{cx:598,cy:265,r:1.2,op:0.65},{cx:636,cy:282,r:1.5,op:0.7},
-  {cx:672,cy:268,r:1,op:0.6},{cx:380,cy:300,r:1.5,op:0.7},{cx:415,cy:318,r:1,op:0.6},
-  {cx:452,cy:308,r:1.8,op:0.75},{cx:490,cy:328,r:1.2,op:0.65},{cx:530,cy:312,r:1.5,op:0.7},
-  {cx:568,cy:322,r:1,op:0.6},{cx:608,cy:338,r:1.8,op:0.75},{cx:648,cy:313,r:1.2,op:0.65},
-  {cx:688,cy:328,r:1.5,op:0.7},
-]
-const ARCHIVE_PILLARS: [number,number][] = [
-  [22,378],[55,392],[100,382],[264,378],[298,386],[320,378],
-]
-const ARCHIVE_BOOKS: { x:number; y:number; fill:string }[] = [
-  {x:90,y:578,fill:'#d97706'},{x:115,y:572,fill:'#b45309'},{x:140,y:580,fill:'#f59e0b'},
-  {x:165,y:574,fill:'#92400e'},{x:190,y:578,fill:'#d97706'},{x:215,y:572,fill:'#b45309'},
-  {x:240,y:578,fill:'#f59e0b'},
-]
-const STORM_RAIN: [number,number][] = [
-  [370,490],[395,510],[425,495],[455,525],[485,505],[515,535],
-  [545,515],[575,545],[605,525],[635,555],[665,530],[690,558],
-  [378,560],[408,580],[442,598],[478,582],[512,600],[546,587],
-  [580,605],[614,592],[648,612],[682,597],[360,622],[395,640],
-  [430,654],[466,642],[502,660],[538,648],[574,664],[610,650],
-]
-const HMTN_XS = [20,55,90,125,160,195,230,265,300,410,445,480,515,550,585,620,655,688]
-const VMTN_YS = [20,55,90,125,160,195,230,265,300,410,445,480,515,550,585,620,655,688]
+const BUILD_LABEL: Record<BuildType, string> = { house:'Casa', rock:'Roca', fire:'Fogata', tree:'Árbol' }
+const BUILD_EMOJI: Record<BuildType, string> = { house:'🏠', rock:'🪨', fire:'🔥', tree:'🌲' }
+let _nextBuildId = 1
 
 // ── Position helpers ──────────────────────────────────────────────────────────
-function isInRegion(x: number, y: number, r: typeof REGION[string]) {
-  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h
-}
-
-function randomInRegion(zone: string, buildings: Building[] = []): { x: number; y: number } {
+function randomInRegion(zone: string): { x: number; y: number } {
   const r = REGION[zone] ?? REGION.Garden
-  const margin = 28
-  const topPad = 38
-  const nearby = buildings.filter(b => isInRegion(b.x, b.y, r))
-  if (nearby.length > 0 && Math.random() < 0.35) {
-    const tgt = nearby[Math.floor(Math.random() * nearby.length)]
-    const spread = 28
-    return {
-      x: Math.max(r.x + margin, Math.min(r.x + r.w - margin,
-        tgt.x + (Math.random() - 0.5) * spread)) - NODE_H,
-      y: Math.max(r.y + topPad, Math.min(r.y + r.h - margin,
-        tgt.y + (Math.random() - 0.5) * spread)) - NODE_H,
-    }
-  }
+  const margin = 14
   return {
-    x: r.x + margin + Math.random() * (r.w - margin * 2) - NODE_H,
-    y: r.y + topPad + Math.random() * (r.h - topPad - margin) - NODE_H,
+    x: r.x + margin + Math.random() * (r.w - margin * 2),
+    y: r.y + margin + Math.random() * (r.h - margin * 2),
   }
 }
 
-// ── Initial view ──────────────────────────────────────────────────────────────
-const INIT_SCALE = 0.52
-const INIT_TX    = -155
-const INIT_TY    = -8
+// ── SVG world data ────────────────────────────────────────────────────────────
 
-// ── Building SVG shapes ────────────────────────────────────────────────────────
+// Background mountain peaks (far, full width)
+const BG_PEAKS: [number, number][] = [
+  [0,340],[22,298],[48,328],[72,278],[98,318],[122,265],[148,300],
+  [175,280],[198,305],[222,248],[248,275],[268,258],[292,272],
+  [315,250],[340,270],[362,240],[388,220],[412,248],[438,268],
+  [462,245],[488,262],[510,250],[525,268],[548,250],[572,265],
+  [592,248],[618,262],[640,245],[662,262],[682,248],[700,268],
+]
+
+// Garden trees: [x, y] — scattered along terrain
+const G_TREES: [number, number][] = [
+  [8,405],[22,388],[40,408],[58,390],[75,410],
+  [92,385],[112,404],[130,390],[148,408],[166,392],
+]
+const G_FLOWERS: { cx:number; cy:number; fill:string }[] = [
+  {cx:18,cy:440,fill:'#86efac'},{cx:42,cy:448,fill:'#f9a8d4'},
+  {cx:68,cy:442,fill:'#fbbf24'},{cx:95,cy:450,fill:'#a7f3d0'},
+  {cx:120,cy:443,fill:'#f472b6'},{cx:145,cy:448,fill:'#6ee7b7'},
+  {cx:168,cy:442,fill:'#fbbf24'},
+]
+const G_RIVER_D = "M 58,0 C 72,80 42,140 65,200 C 88,260 50,320 75,390 C 88,420 100,440 120,455"
+
+// Archive columns: [x, y_base]
+const A_COLS: [number, number][] = [
+  [185,382],[200,386],[218,382],[238,380],[258,382],[278,386],[298,382],[318,380],[338,382],
+]
+const A_RUIN_BLOCKS: { x:number; y:number; w:number; h:number }[] = [
+  {x:190,y:448,w:55,h:10},{x:260,y:445,w:48,h:12},{x:325,y:450,w:22,h:8},
+]
+
+// Void stars in sky portion (x 350-525)
+const V_STARS: { cx:number; cy:number; r:number; op:number }[] = [
+  {cx:358,cy:15,r:1.5,op:0.8},{cx:375,cy:38,r:1,op:0.65},{cx:395,cy:18,r:1.8,op:0.75},
+  {cx:415,cy:45,r:1.2,op:0.7},{cx:432,cy:25,r:1,op:0.6},{cx:450,cy:55,r:1.5,op:0.75},
+  {cx:468,cy:30,r:1.8,op:0.8},{cx:488,cy:60,r:1,op:0.65},{cx:505,cy:40,r:1.5,op:0.7},
+  {cx:520,cy:18,r:1.2,op:0.75},{cx:362,cy:75,r:1,op:0.65},{cx:382,cy:95,r:1.5,op:0.7},
+  {cx:405,cy:80,r:1.8,op:0.75},{cx:428,cy:100,r:1.2,op:0.65},{cx:448,cy:78,r:1,op:0.6},
+  {cx:470,cy:105,r:1.5,op:0.7},{cx:492,cy:88,r:1,op:0.65},{cx:512,cy:110,r:1.8,op:0.8},
+  {cx:365,cy:135,r:1.2,op:0.7},{cx:388,cy:155,r:1,op:0.6},{cx:410,cy:138,r:1.5,op:0.75},
+  {cx:435,cy:160,r:1.8,op:0.8},{cx:458,cy:142,r:1,op:0.65},{cx:480,cy:165,r:1.5,op:0.7},
+  {cx:502,cy:148,r:1.2,op:0.65},{cx:522,cy:170,r:1,op:0.6},
+]
+
+// Storm rain streaks
+const S_RAIN: [number, number][] = [
+  [532,60],[548,85],[565,62],[582,90],[598,70],[615,95],[632,72],[648,98],[665,78],[682,102],
+  [538,140],[556,165],[572,142],[590,170],[607,148],[624,175],[640,155],[658,178],[675,162],
+  [530,220],[548,248],[565,225],[582,252],[600,228],[618,255],[635,232],[652,258],[670,238],
+  [542,300],[560,328],[578,305],[595,332],[612,308],[630,338],[648,312],[665,340],[682,318],
+]
+
+// ── Building shapes ────────────────────────────────────────────────────────────
 function HouseShape({ x, y }: { x: number; y: number }) {
   return (
     <G transform={`translate(${x - 12},${y - 18})`}>
@@ -151,7 +124,7 @@ function RockShape({ x, y }: { x: number; y: number }) {
   return (
     <G transform={`translate(${x - 12},${y - 10})`}>
       <Ellipse cx="12" cy="10" rx="12" ry="9" fill="#374151" />
-      <Ellipse cx="8"  cy="8"  rx="7"  ry="6" fill="#4b5563" />
+      <Ellipse cx="8" cy="8" rx="7" ry="6" fill="#4b5563" />
     </G>
   )
 }
@@ -166,15 +139,14 @@ function FireShape({ x, y }: { x: number; y: number }) {
 }
 function ExtraTreeShape({ x, y }: { x: number; y: number }) {
   return (
-    <G transform={`translate(${x - 12},${y - 20})`}>
-      <Polygon points="12,0 0,18 24,18" fill="#14532d" />
-      <Rect x="9" y="18" width="6" height="12" fill="#713f12" rx={2} />
+    <G transform={`translate(${x - 10},${y - 18})`}>
+      <Polygon points="10,0 0,18 20,18" fill="#14532d" />
+      <Rect x="7" y="18" width="6" height="10" fill="#713f12" rx={1} />
     </G>
   )
 }
 
-let _nextBuildId = 1
-
+// ── Misc helpers ───────────────────────────────────────────────────────────────
 function formatAway(ms: number): string {
   const mins = Math.floor(ms / 60_000)
   if (mins < 60) return `${mins} min`
@@ -182,13 +154,18 @@ function formatAway(ms: number): string {
   return m > 0 ? `${h}h ${m}min` : `${h}h`
 }
 
+const NODE = 17
+const NODE_H = NODE / 2
+const INIT_SCALE = 0.62
+const INIT_TX    = -120
+const INIT_TY    = -30
+
 // ── World Screen ──────────────────────────────────────────────────────────────
 export default function WorldScreen() {
-  const { entities, worldState, liveEvents, isThinking, apiEnabled, feedEntity,
-          awaySummary, dismissAwaySummary } = useSimulation()
+  const { entities, worldState, liveEvents, isThinking, apiEnabled,
+          feedEntity, awaySummary, dismissAwaySummary } = useSimulation()
   const router = useRouter()
 
-  // Pan / zoom
   const scale      = useRef(new Animated.Value(INIT_SCALE)).current
   const translateX = useRef(new Animated.Value(INIT_TX)).current
   const translateY = useRef(new Animated.Value(INIT_TY)).current
@@ -197,32 +174,23 @@ export default function WorldScreen() {
   const pinchDist0  = useRef<number | null>(null)
   const pinchScale0 = useRef(INIT_SCALE)
 
-  // canvasWrap position on screen (used for reliable tap coords in build mode)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const canvasWrapRef  = useRef<any>(null)
   const wrapPageOffset = useRef({ x: 0, y: 0 })
 
-  // Build mode
   const [buildMode, setBuildModeState] = useState(false)
-  const buildModeRef = useRef(false)
+  const buildModeRef    = useRef(false)
   const [selectedBuild, setSelectedBuild] = useState<BuildType>('house')
-  const [buildings, setBuildings] = useState<Building[]>([])
-
-  const setBuildMode = (v: boolean) => {
-    buildModeRef.current = v
-    setBuildModeState(v)
-  }
+  const [buildings, setBuildings]         = useState<Building[]>([])
+  const setBuildMode = (v: boolean) => { buildModeRef.current = v; setBuildModeState(v) }
   const selectedBuildRef = useRef<BuildType>('house')
   useEffect(() => { selectedBuildRef.current = selectedBuild }, [selectedBuild])
 
-  // Entity popup
   const [popup, setPopup] = useState<Entity | null>(null)
 
-  // Entity positions
   const posRef = useRef<Record<number, { x: Animated.Value; y: Animated.Value }>>({})
   entities.forEach(entity => {
     if (!posRef.current[entity.id]) {
-      const p = randomInRegion(entity.current_zone, buildings)
+      const p = randomInRegion(entity.current_zone)
       posRef.current[entity.id] = {
         x: new Animated.Value(p.x),
         y: new Animated.Value(p.y),
@@ -230,71 +198,59 @@ export default function WorldScreen() {
     }
   })
 
-  // Keep latest entities/buildings accessible inside intervals/callbacks
-  const entitiesRef  = useRef(entities)
-  const buildingsRef = useRef(buildings)
-  useEffect(() => { entitiesRef.current = entities  }, [entities])
-  useEffect(() => { buildingsRef.current = buildings }, [buildings])
+  const entitiesRef = useRef(entities)
+  useEffect(() => { entitiesRef.current = entities }, [entities])
 
-  // ── Continuous movement — entities always wander (every 2.5 s) ──────────────
   useEffect(() => {
     const id = setInterval(() => {
       entitiesRef.current.forEach(entity => {
         const pos = posRef.current[entity.id]
         if (!pos) return
-        const p = randomInRegion(entity.current_zone, buildingsRef.current)
+        const p = randomInRegion(entity.current_zone)
         Animated.parallel([
-          Animated.timing(pos.x, { toValue: p.x, duration: 2000, useNativeDriver: false }),
-          Animated.timing(pos.y, { toValue: p.y, duration: 2000, useNativeDriver: false }),
+          Animated.timing(pos.x, { toValue: p.x, duration: 2200, useNativeDriver: false }),
+          Animated.timing(pos.y, { toValue: p.y, duration: 2200, useNativeDriver: false }),
         ]).start()
       })
-    }, 2500)
+    }, 2800)
     return () => clearInterval(id)
-  }, []) // single interval, uses refs for fresh data
+  }, [])
 
-  // ── Encounter animation ───────────────────────────────────────────────────────
   const lastEncounterRef = useRef(-1)
   useEffect(() => {
     const enc = liveEvents.find(ev => ev.type === 'encounter')
     if (!enc || enc.id === lastEncounterRef.current) return
     lastEncounterRef.current = enc.id
-
     const idA = (enc.entity_a as { id: number }).id
     const idB = (enc.entity_b as { id: number }).id
     const posA = posRef.current[idA]
     const posB = posRef.current[idB]
     if (!posA || !posB) return
-
     const axV = (posA.x as any)._value as number
     const ayV = (posA.y as any)._value as number
     const bxV = (posB.x as any)._value as number
     const byV = (posB.y as any)._value as number
     const midX = (axV + bxV) / 2
     const midY = (ayV + byV) / 2
-
     Animated.parallel([
-      Animated.timing(posA.x, { toValue: midX - 16, duration: 900, useNativeDriver: false }),
+      Animated.timing(posA.x, { toValue: midX - 14, duration: 900, useNativeDriver: false }),
       Animated.timing(posA.y, { toValue: midY,      duration: 900, useNativeDriver: false }),
       Animated.timing(posB.x, { toValue: midX + 4,  duration: 900, useNativeDriver: false }),
       Animated.timing(posB.y, { toValue: midY,      duration: 900, useNativeDriver: false }),
     ]).start(() => {
       const zoneA = entitiesRef.current.find(e => e.id === idA)?.current_zone ?? 'Garden'
       const zoneB = entitiesRef.current.find(e => e.id === idB)?.current_zone ?? 'Garden'
-      const newA  = randomInRegion(zoneA, buildingsRef.current)
-      const newB  = randomInRegion(zoneB, buildingsRef.current)
       Animated.parallel([
-        Animated.timing(posA.x, { toValue: newA.x, duration: 1400, useNativeDriver: false }),
-        Animated.timing(posA.y, { toValue: newA.y, duration: 1400, useNativeDriver: false }),
-        Animated.timing(posB.x, { toValue: newB.x, duration: 1400, useNativeDriver: false }),
-        Animated.timing(posB.y, { toValue: newB.y, duration: 1400, useNativeDriver: false }),
+        Animated.timing(posA.x, { toValue: randomInRegion(zoneA).x, duration: 1400, useNativeDriver: false }),
+        Animated.timing(posA.y, { toValue: randomInRegion(zoneA).y, duration: 1400, useNativeDriver: false }),
+        Animated.timing(posB.x, { toValue: randomInRegion(zoneB).x, duration: 1400, useNativeDriver: false }),
+        Animated.timing(posB.y, { toValue: randomInRegion(zoneB).y, duration: 1400, useNativeDriver: false }),
       ]).start()
     })
-  }, [liveEvents]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [liveEvents])
 
-  // ── PanResponder ──────────────────────────────────────────────────────────────
   const panResponder = useRef(
     PanResponder.create({
-      // In build mode capture taps immediately so onRelease fires for single taps
       onStartShouldSetPanResponder: () => buildModeRef.current,
       onMoveShouldSetPanResponder: (evt, gs) =>
         Math.abs(gs.dx) > 4 || Math.abs(gs.dy) > 4 || evt.nativeEvent.touches.length >= 2,
@@ -315,8 +271,7 @@ export default function WorldScreen() {
             pinchDist0.current  = dist
             pinchScale0.current = lastScale.current
           } else {
-            const newS = Math.min(3, Math.max(0.28,
-              pinchScale0.current * dist / pinchDist0.current))
+            const newS = Math.min(3, Math.max(0.25, pinchScale0.current * dist / pinchDist0.current))
             scale.setValue(newS)
             lastScale.current = newS
           }
@@ -329,24 +284,17 @@ export default function WorldScreen() {
         pinchDist0.current = null
         translateX.flattenOffset()
         translateY.flattenOffset()
-        lastOffset.current = {
-          x: (translateX as any)._value,
-          y: (translateY as any)._value,
-        }
-        // Place building on tap (movement < 12px)
-        // Use pageX/pageY minus the canvasWrap's screen position for reliable coords
+        lastOffset.current = { x: (translateX as any)._value, y: (translateY as any)._value }
         if (buildModeRef.current && Math.abs(gs.dx) < 12 && Math.abs(gs.dy) < 12) {
           const sx = evt.nativeEvent.pageX - wrapPageOffset.current.x
           const sy = evt.nativeEvent.pageY - wrapPageOffset.current.y
           const s  = lastScale.current
           const tx = lastOffset.current.x
           const ty = lastOffset.current.y
-          const cx = (sx - HALF - tx) / s + HALF
-          const cy = (sy - HALF - ty) / s + HALF
-          if (cx >= 0 && cx <= CANVAS && cy >= 0 && cy <= CANVAS) {
-            setBuildings(prev => [...prev, {
-              id: _nextBuildId++, type: selectedBuildRef.current, x: cx, y: cy,
-            }])
+          const cx = (sx - W / 2 - tx) / s + W / 2
+          const cy = (sy - H / 2 - ty) / s + H / 2
+          if (cx >= 0 && cx <= W && cy >= 0 && cy <= H) {
+            setBuildings(prev => [...prev, { id: _nextBuildId++, type: selectedBuildRef.current, x: cx, y: cy }])
           }
         }
       },
@@ -354,11 +302,10 @@ export default function WorldScreen() {
   ).current
 
   const zoom = (factor: number) => {
-    const newS = Math.min(3, Math.max(0.28, lastScale.current * factor))
+    const newS = Math.min(3, Math.max(0.25, lastScale.current * factor))
     Animated.spring(scale, { toValue: newS, useNativeDriver: false, friction: 7 }).start()
     lastScale.current = newS
   }
-
   const resetView = () => {
     Animated.parallel([
       Animated.spring(scale,      { toValue: INIT_SCALE, useNativeDriver: false, friction: 7 }),
@@ -369,15 +316,18 @@ export default function WorldScreen() {
     lastOffset.current = { x: INIT_TX, y: INIT_TY }
   }
 
+  // most recent live event for ticker
+  const latestEvent = liveEvents[0] ?? null
+
   return (
     <View style={styles.container}>
 
       {/* ── Header ── */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.headerTitle}>🌊 Vida Sintética</Text>
+          <Text style={styles.headerTitle}>Uberis</Text>
           <Text style={styles.headerSub}>
-            {entities.length} vivos · turno {worldState.current_tick}
+            {entities.length} vivos · t{worldState.current_tick}
           </Text>
         </View>
         <View style={styles.headerRight}>
@@ -392,7 +342,7 @@ export default function WorldScreen() {
         </View>
       </View>
 
-      {/* ── Away banner (shown when app resumes after absence) ── */}
+      {/* ── Away banner ── */}
       {awaySummary && (
         <View style={styles.awayBanner}>
           <View style={styles.awayBody}>
@@ -415,8 +365,8 @@ export default function WorldScreen() {
         style={styles.canvasWrap}
         onLayout={() => {
           canvasWrapRef.current?.measure(
-            (_x: number, _y: number, _w: number, _h: number, pageX: number, pageY: number) => {
-              wrapPageOffset.current = { x: pageX, y: pageY }
+            (_x: number, _y: number, _w: number, _h: number, px: number, py: number) => {
+              wrapPageOffset.current = { x: px, y: py }
             }
           )
         }}
@@ -427,229 +377,276 @@ export default function WorldScreen() {
           { transform: [{ translateX }, { translateY }, { scale }] },
         ]}>
 
-          {/* ── SVG world layer ── */}
-          <Svg width={CANVAS} height={CANVAS} style={StyleSheet.absoluteFill} pointerEvents="none">
+          {/* ══════════════ SVG WORLD ══════════════ */}
+          <Svg width={W} height={H} style={StyleSheet.absoluteFill} pointerEvents="none">
             <Defs>
-              <LinearGradient id="gGarden" x1="0" y1="0" x2="0" y2="1">
-                <Stop offset="0" stopColor="#134e1a" stopOpacity="0.5" />
-                <Stop offset="1" stopColor="#052e16" stopOpacity="0.25" />
+              {/* Horizontal sky gradient: Garden → Archive → Void → Storm */}
+              <LinearGradient id="sky" x1="0%" y1="0%" x2="100%" y2="0%">
+                <Stop offset="0%"   stopColor="#061520" />
+                <Stop offset="18%"  stopColor="#0a2515" />
+                <Stop offset="25%"  stopColor="#152e18" />
+                <Stop offset="38%"  stopColor="#18120a" />
+                <Stop offset="50%"  stopColor="#2a1505" />
+                <Stop offset="62%"  stopColor="#0d0615" />
+                <Stop offset="75%"  stopColor="#06021a" />
+                <Stop offset="87%"  stopColor="#080205" />
+                <Stop offset="100%" stopColor="#0c0308" />
               </LinearGradient>
-              <LinearGradient id="gVoid" x1="0" y1="0" x2="0" y2="1">
-                <Stop offset="0" stopColor="#050210" stopOpacity="0.95" />
-                <Stop offset="1" stopColor="#1e1b4b" stopOpacity="0.75" />
+
+              {/* Vertical sky vignette (darker at very top) */}
+              <LinearGradient id="skyVig" x1="0%" y1="0%" x2="0%" y2="100%">
+                <Stop offset="0%"   stopColor="#000000" stopOpacity="0.5" />
+                <Stop offset="40%"  stopColor="#000000" stopOpacity="0.1" />
+                <Stop offset="100%" stopColor="#000000" stopOpacity="0" />
               </LinearGradient>
-              <LinearGradient id="gArchive" x1="0" y1="0" x2="0" y2="1">
-                <Stop offset="0" stopColor="#78350f" stopOpacity="0.4" />
-                <Stop offset="1" stopColor="#451a03" stopOpacity="0.25" />
+
+              {/* Ground fills per zone */}
+              <LinearGradient id="gGarden" x1="0%" y1="0%" x2="0%" y2="100%">
+                <Stop offset="0%"   stopColor="#14532d" stopOpacity="1" />
+                <Stop offset="100%" stopColor="#052e16" stopOpacity="1" />
               </LinearGradient>
-              <LinearGradient id="gStorm" x1="0" y1="0" x2="0" y2="1">
-                <Stop offset="0" stopColor="#1a0505" stopOpacity="0.95" />
-                <Stop offset="1" stopColor="#3b0a0a" stopOpacity="0.65" />
+              <LinearGradient id="gArchive" x1="0%" y1="0%" x2="0%" y2="100%">
+                <Stop offset="0%"   stopColor="#78350f" stopOpacity="1" />
+                <Stop offset="100%" stopColor="#451a03" stopOpacity="1" />
+              </LinearGradient>
+              <LinearGradient id="gVoid" x1="0%" y1="0%" x2="0%" y2="100%">
+                <Stop offset="0%"   stopColor="#1e1b4b" stopOpacity="1" />
+                <Stop offset="100%" stopColor="#0d0b2a" stopOpacity="1" />
+              </LinearGradient>
+              <LinearGradient id="gStorm" x1="0%" y1="0%" x2="0%" y2="100%">
+                <Stop offset="0%"   stopColor="#180a0a" stopOpacity="1" />
+                <Stop offset="100%" stopColor="#080404" stopOpacity="1" />
+              </LinearGradient>
+
+              {/* Mist / atmospheric layers */}
+              <LinearGradient id="mistGarden" x1="0%" y1="0%" x2="0%" y2="100%">
+                <Stop offset="0%"   stopColor="#1a4a28" stopOpacity="0" />
+                <Stop offset="100%" stopColor="#22c55e" stopOpacity="0.12" />
+              </LinearGradient>
+              <LinearGradient id="mistVoid" x1="0%" y1="0%" x2="0%" y2="100%">
+                <Stop offset="0%"   stopColor="#4c1d95" stopOpacity="0" />
+                <Stop offset="100%" stopColor="#7c3aed" stopOpacity="0.15" />
               </LinearGradient>
             </Defs>
 
-            {/* ─── Biome backgrounds ─── */}
-            <Rect x="0"   y="0"   width="350" height="350" fill="url(#gGarden)" />
-            <Rect x="350" y="0"   width="350" height="350" fill="url(#gVoid)" />
-            <Rect x="0"   y="350" width="350" height="350" fill="url(#gArchive)" />
-            <Rect x="350" y="350" width="350" height="350" fill="url(#gStorm)" />
+            {/* ─── LAYER 1: Sky ─── */}
+            <Rect x={0} y={0} width={W} height={H} fill="url(#sky)" />
+            <Rect x={0} y={0} width={W} height={340} fill="url(#skyVig)" />
 
-            {/* ═══ JARDÍN — bosque, río, flores ═══ */}
+            {/* ─── LAYER 2: Void stars ─── */}
+            {V_STARS.map((s, i) => (
+              <Circle key={`vs${i}`} cx={s.cx} cy={s.cy} r={s.r} fill="#ddd6fe" opacity={s.op} />
+            ))}
+            {/* Bright accent stars in Void */}
+            <Circle cx={362} cy={192} r={2.5} fill="#e879f9" opacity={0.9} />
+            <Circle cx={402} cy={225} r={2}   fill="#c4b5fd" opacity={0.85} />
+            <Circle cx={448} cy={178} r={2.5} fill="#818cf8" opacity={0.85} />
+            <Circle cx={498} cy={210} r={2}   fill="#a78bfa" opacity={0.8} />
+            <Circle cx={518} cy={158} r={3}   fill="#e879f9" opacity={0.7} />
+
+            {/* Moon crescent in Void sky */}
+            <Circle cx={490} cy={60} r={28} fill="#a78bfa" opacity={0.45} />
+            <Circle cx={502} cy={54} r={24} fill="#030110" opacity={0.98} />
+            <Circle cx={488} cy={65} r={4}  fill="#7c3aed" opacity={0.2} />
+            <Circle cx={498} cy={75} r={2.5} fill="#6d28d9" opacity={0.18} />
+
+            {/* Garden morning star */}
+            <Circle cx={30}  cy={40} r={2}   fill="#fde68a" opacity={0.7} />
+            <Circle cx={128} cy={28} r={1.5} fill="#fef9c3" opacity={0.65} />
+
+            {/* ─── LAYER 3: Storm clouds & lightning ─── */}
+            {/* Dense clouds */}
+            {([540,558,576,594,612,630,648,666,684,700] as number[]).map((cx, i) => (
+              <G key={`sc${i}`}>
+                <Circle cx={cx}   cy={35}  r={20} fill="#0c0505" opacity={0.85} />
+                <Circle cx={cx+8} cy={26}  r={14} fill="#140808" opacity={0.8} />
+              </G>
+            ))}
+            {([548,568,588,608,628,648,668,688] as number[]).map((cx, i) => (
+              <Circle key={`sc2${i}`} cx={cx} cy={62} r={16} fill="#180a0a" opacity={0.75} />
+            ))}
+            {/* Lightning bolts */}
+            <Path d="M 560,70 L 552,108 L 565,104 L 555,148" stroke="#fbbf24" strokeWidth={3}   fill="none" opacity={0.9} />
+            <Path d="M 560,70 L 552,108 L 565,104 L 555,148" stroke="#fef9c3" strokeWidth={1.2} fill="none" opacity={0.65} />
+            <Path d="M 628,55 L 620,96 L 633,92 L 623,136" stroke="#f59e0b" strokeWidth={2.5} fill="none" opacity={0.8} />
+            <Path d="M 628,55 L 620,96 L 633,92 L 623,136" stroke="#fef08a" strokeWidth={1}   fill="none" opacity={0.55} />
+            <Path d="M 688,68 L 680,108 L 693,104 L 683,148" stroke="#fbbf24" strokeWidth={2.5} fill="none" opacity={0.75} />
+            {/* Rain streaks */}
+            {S_RAIN.map(([rx, ry], i) => (
+              <Rect key={`rain${i}`} x={rx} y={ry} width={1.5} height={10}
+                fill="#fca5a5" opacity={0.22} rx={1}
+                transform={`rotate(-16 ${rx} ${ry})`} />
+            ))}
+
+            {/* ─── LAYER 4: Background mountain range (far, full width) ─── */}
+            <Path
+              d={
+                `M 0,700 L 0,${BG_PEAKS[0][1]} ` +
+                BG_PEAKS.map(([x, y]) => `L ${x},${y}`).join(' ') +
+                ` L 700,700 Z`
+              }
+              fill="#1a2840"
+              opacity={0.72}
+            />
+            {/* Snow caps on the highest peaks */}
+            {BG_PEAKS.filter(([, y]) => y < 275).map(([px, py], i) => (
+              <Polygon key={`snow${i}`}
+                points={`${px},${py} ${px - 7},${py + 12} ${px + 7},${py + 12}`}
+                fill="#e2e8f0" opacity={0.55}
+              />
+            ))}
+            {/* Snow highlight on peak tops */}
+            {BG_PEAKS.filter(([, y]) => y < 255).map(([px, py], i) => (
+              <Polygon key={`snowh${i}`}
+                points={`${px},${py} ${px - 3},${py + 5} ${px + 3},${py + 5}`}
+                fill="#ffffff" opacity={0.7}
+              />
+            ))}
+
+            {/* ─── LAYER 5: Near mountains per zone ─── */}
+            {/* Garden near hills */}
+            <Path
+              d="M 0,700 L 0,415 L 18,395 L 38,410 L 58,388 L 80,408 L 100,385 L 122,408 L 145,392 L 168,410 L 175,405 L 175,700 Z"
+              fill="url(#gGarden)"
+              opacity={0.95}
+            />
+            {/* Archive near hills */}
+            <Path
+              d="M 175,700 L 175,405 L 192,392 L 212,408 L 232,388 L 252,405 L 272,388 L 292,408 L 312,392 L 332,408 L 350,395 L 350,700 Z"
+              fill="url(#gArchive)"
+              opacity={0.95}
+            />
+            {/* Void near hills */}
+            <Path
+              d="M 350,700 L 350,395 L 368,382 L 388,398 L 408,380 L 428,398 L 448,382 L 468,398 L 488,380 L 508,398 L 525,390 L 525,700 Z"
+              fill="url(#gVoid)"
+              opacity={0.95}
+            />
+            {/* Storm near hills */}
+            <Path
+              d="M 525,700 L 525,390 L 542,378 L 562,392 L 580,375 L 600,390 L 618,375 L 638,390 L 658,375 L 678,390 L 700,380 L 700,700 Z"
+              fill="url(#gStorm)"
+              opacity={0.95}
+            />
+
+            {/* ─── LAYER 6: Garden features ─── */}
             <G>
-              {/* River winding through Garden */}
-              <Path
-                d="M 62,0 C 85,55 42,105 72,155 C 102,205 58,252 92,298 C 118,338 142,348 162,348"
-                fill="none" stroke="#2563eb" strokeWidth="12" opacity={0.3}
-              />
-              <Path
-                d="M 62,0 C 85,55 42,105 72,155 C 102,205 58,252 92,298 C 118,338 142,348 162,348"
-                fill="none" stroke="#93c5fd" strokeWidth="6" opacity={0.35}
-              />
-              <Path
-                d="M 62,0 C 85,55 42,105 72,155 C 102,205 58,252 92,298 C 118,338 142,348 162,348"
-                fill="none" stroke="#bfdbfe" strokeWidth="2" opacity={0.25}
-              />
-              {/* Small pond */}
-              <Ellipse cx="238" cy="288" rx="30" ry="17" fill="#1d4ed8" opacity={0.25} />
-              <Ellipse cx="238" cy="288" rx="22" ry="11" fill="#60a5fa" opacity={0.2} />
-              {/* Forest cluster A */}
-              {GARDEN_TREES_A.map(([tx,ty],i) => (
-                <G key={`tA${i}`} transform={`translate(${tx-10},${ty-24})`}>
-                  <Rect x="7" y="20" width="6" height="16" fill="#713f12" opacity={0.7} rx={1}/>
-                  <Polygon points="10,0 -2,20 22,20" fill="#166534" opacity={0.75}/>
-                  <Polygon points="10,7 0,22 20,22"  fill="#15803d" opacity={0.55}/>
-                </G>
-              ))}
-              {/* Forest cluster B */}
-              {GARDEN_TREES_B.map(([tx,ty],i) => (
-                <G key={`tB${i}`} transform={`translate(${tx-10},${ty-24})`}>
-                  <Rect x="7" y="20" width="6" height="16" fill="#713f12" opacity={0.65} rx={1}/>
-                  <Polygon points="10,0 -2,20 22,20" fill="#14532d" opacity={0.7}/>
-                  <Polygon points="10,7 0,22 20,22"  fill="#16a34a" opacity={0.5}/>
-                </G>
-              ))}
-              {/* Forest cluster C (smaller trees) */}
-              {GARDEN_TREES_C.map(([tx,ty],i) => (
-                <G key={`tC${i}`} transform={`translate(${tx-8},${ty-18})`}>
-                  <Rect x="5" y="16" width="5" height="12" fill="#713f12" opacity={0.6} rx={1}/>
-                  <Polygon points="8,0 -1,17 17,17" fill="#15803d" opacity={0.65}/>
+              {/* River */}
+              <Path d={G_RIVER_D} fill="none" stroke="#2563eb" strokeWidth={10} opacity={0.28} />
+              <Path d={G_RIVER_D} fill="none" stroke="#93c5fd" strokeWidth={5}  opacity={0.3} />
+              <Path d={G_RIVER_D} fill="none" stroke="#bfdbfe" strokeWidth={2}  opacity={0.2} />
+              {/* Trees along terrain */}
+              {G_TREES.map(([tx, ty], i) => (
+                <G key={`gt${i}`} transform={`translate(${tx - 8},${ty - 20})`}>
+                  <Rect x={5} y={16} width={5} height={14} fill="#713f12" opacity={0.75} rx={1} />
+                  <Polygon points="8,0 -1,18 17,18" fill="#166534" opacity={0.8} />
+                  <Polygon points="8,6 1,18 15,18" fill="#15803d" opacity={0.6} />
                 </G>
               ))}
               {/* Flowers */}
-              {GARDEN_FLOWERS.map(({ cx, cy, fill }, i) => (
-                <G key={`fl${i}`}>
-                  <Circle cx={cx} cy={cy} r={4.5} fill={fill}  opacity={0.7}/>
-                  <Circle cx={cx} cy={cy} r={2}   fill="#fff"  opacity={0.45}/>
+              {G_FLOWERS.map(({ cx, cy, fill }, i) => (
+                <G key={`gf${i}`}>
+                  <Circle cx={cx} cy={cy} r={3.5} fill={fill}  opacity={0.75} />
+                  <Circle cx={cx} cy={cy} r={1.5} fill="#fff"  opacity={0.5} />
                 </G>
               ))}
-              {/* Grass patches */}
-              <Rect x="10"  y="342" width="65" height="6" fill="#16a34a" opacity={0.28} rx={3}/>
-              <Rect x="170" y="338" width="85" height="5" fill="#15803d" opacity={0.28} rx={3}/>
-              <Rect x="268" y="340" width="62" height="6" fill="#16a34a" opacity={0.22} rx={3}/>
+              {/* Small pond */}
+              <Ellipse cx={142} cy={455} rx={22} ry={10} fill="#1d4ed8" opacity={0.3} />
+              <Ellipse cx={142} cy={455} rx={16} ry={7}  fill="#60a5fa" opacity={0.18} />
+              {/* Mist at base */}
+              <Rect x={0} y={420} width={175} height={280} fill="url(#mistGarden)" />
             </G>
 
-            {/* ═══ VACÍO — espacio profundo, nebulosa, lago oscuro ═══ */}
-            <G>
-              {/* Nebula blobs */}
-              <Ellipse cx="520" cy="78"  rx="58" ry="32" fill="#7c3aed" opacity={0.12}/>
-              <Ellipse cx="562" cy="102" rx="42" ry="22" fill="#6d28d9" opacity={0.1}/>
-              <Ellipse cx="622" cy="142" rx="52" ry="26" fill="#4f46e5" opacity={0.1}/>
-              <Ellipse cx="452" cy="198" rx="46" ry="24" fill="#7c3aed" opacity={0.08}/>
-              <Ellipse cx="590" cy="220" rx="38" ry="18" fill="#4c1d95" opacity={0.08}/>
-              {/* Moon crescent */}
-              <Circle cx="632" cy="54" r="26" fill="#a78bfa" opacity={0.48}/>
-              <Circle cx="643" cy="48" r="22" fill="#050210" opacity={0.97}/>
-              {/* Moon surface details */}
-              <Circle cx="628" cy="58" r="4"   fill="#7c3aed" opacity={0.2}/>
-              <Circle cx="638" cy="68" r="2.5" fill="#6d28d9" opacity={0.18}/>
-              {/* Stars */}
-              {VOID_STARS.map((s, i) => (
-                <Circle key={i} cx={s.cx} cy={s.cy} r={s.r} fill="#ddd6fe" opacity={s.op}/>
-              ))}
-              {/* Bright accent stars */}
-              <Circle cx="430" cy="236" r="3"   fill="#e879f9" opacity={0.85}/>
-              <Circle cx="555" cy="192" r="2.5" fill="#c4b5fd" opacity={0.9}/>
-              <Circle cx="652" cy="270" r="3"   fill="#818cf8" opacity={0.85}/>
-              <Circle cx="498" cy="312" r="2.5" fill="#a78bfa" opacity={0.8}/>
-              {/* Void lake */}
-              <Ellipse cx="478" cy="322" rx="52" ry="22" fill="#1e1b4b" opacity={0.85}/>
-              <Ellipse cx="478" cy="322" rx="42" ry="16" fill="#312e81" opacity={0.45}/>
-              <Ellipse cx="478" cy="317" rx="28" ry="8"  fill="#4c1d95" opacity={0.3}/>
-              {/* Star reflections in lake */}
-              <Circle cx="468" cy="322" r={1}   fill="#c4b5fd" opacity={0.45}/>
-              <Circle cx="488" cy="320" r={1}   fill="#a78bfa" opacity={0.45}/>
-              <Circle cx="476" cy="328" r={0.8} fill="#818cf8" opacity={0.4}/>
-              <Circle cx="495" cy="325" r={0.7} fill="#e879f9" opacity={0.35}/>
-            </G>
-
-            {/* ═══ ARCHIVO — ruinas antiguas, columnas, biblioteca ═══ */}
+            {/* ─── LAYER 6: Archive features ─── */}
             <G>
               {/* Stone floor */}
-              <Rect x="5" y="622" width="338" height="73" fill="#1c1917" opacity={0.45} rx={2}/>
-              {/* Moss texture on floor */}
-              <Ellipse cx="60"  cy="668" rx="22" ry="6" fill="#14532d" opacity={0.2}/>
-              <Ellipse cx="200" cy="672" rx="30" ry="5" fill="#15803d" opacity={0.18}/>
+              <Rect x={178} y={455} width={168} height={20} fill="#1c1917" opacity={0.5} rx={2} />
               {/* Columns */}
-              {ARCHIVE_PILLARS.map(([px,py],i) => (
-                <G key={`pil${i}`}>
-                  <Rect x={px}   y={py}    width={12} height={62} fill="#92400e" opacity={0.55} rx={2}/>
-                  <Rect x={px-2} y={py-7}  width={16} height={8}  fill="#b45309" opacity={0.55} rx={2}/>
-                  <Rect x={px-2} y={py+62} width={16} height={6}  fill="#78350f" opacity={0.5}  rx={1}/>
+              {A_COLS.map(([cx, cy], i) => (
+                <G key={`ac${i}`}>
+                  <Rect x={cx}   y={cy}    width={9}  height={58} fill="#92400e" opacity={0.6} rx={2} />
+                  <Rect x={cx-2} y={cy-6}  width={13} height={7}  fill="#b45309" opacity={0.6} rx={2} />
+                  <Rect x={cx-2} y={cy+58} width={13} height={5}  fill="#78350f" opacity={0.55} rx={1} />
                 </G>
               ))}
-              {/* Fallen stone block */}
-              <Rect x="145" y="528" width="48" height="14" fill="#57534e" opacity={0.55} rx={2}/>
-              <Rect x="162" y="540" width="32" height="10" fill="#44403c" opacity={0.45} rx={2}/>
-              <Ellipse cx="158" cy="528" rx="12" ry="4" fill="#15803d" opacity={0.28}/>
-              {/* Bookshelf bar */}
-              <Rect x="78" y="602" width="200" height="5" fill="#b45309" opacity={0.45} rx={2}/>
-              {ARCHIVE_BOOKS.map(({ x, y, fill }, i) => (
-                <Rect key={`bk${i}`} x={x} y={y} width={20} height={26} fill={fill} opacity={0.55} rx={2}/>
+              {/* Ruin blocks */}
+              {A_RUIN_BLOCKS.map((b, i) => (
+                <Rect key={`rb${i}`} x={b.x} y={b.y} width={b.w} height={b.h} fill="#57534e" opacity={0.6} rx={2} />
               ))}
-              <Rect x="78" y="607" width="200" height="3" fill="#78350f" opacity={0.35} rx={1}/>
               {/* Ancient symbols */}
-              <Path d="M 162,422 L 167,412 L 172,422 L 177,412" stroke="#f59e0b" strokeWidth="1.5" fill="none" opacity={0.38}/>
-              <Circle cx="202" cy="452" r="8" fill="none" stroke="#f59e0b" strokeWidth="1.5" opacity={0.32}/>
-              <Path d="M 198,452 L 206,452 M 202,448 L 202,456" stroke="#f59e0b" strokeWidth="1.5" opacity={0.32}/>
-              <Path d="M 72,490 C 82,482 92,492 102,482 C 112,472 122,482 132,472" fill="none" stroke="#d97706" strokeWidth="1" opacity={0.32}/>
-              <Path d="M 220,540 L 230,530 L 240,540 L 250,530 L 260,540" fill="none" stroke="#f59e0b" strokeWidth="1" opacity={0.25}/>
+              <Path d="M 210,440 L 215,430 L 220,440 L 225,430" stroke="#f59e0b" strokeWidth={1.5} fill="none" opacity={0.4} />
+              <Circle cx={255} cy={445} r={7} fill="none" stroke="#f59e0b" strokeWidth={1.5} opacity={0.35} />
+              <Path d="M 252,445 L 258,445 M 255,442 L 255,448" stroke="#f59e0b" strokeWidth={1.5} opacity={0.35} />
+              <Path d="M 290,440 C 298,433 306,442 314,433 C 322,424 330,433 338,424" fill="none" stroke="#d97706" strokeWidth={1} opacity={0.3} />
             </G>
 
-            {/* ═══ TORMENTA — nubes densas, rayos, lluvia, inundación ═══ */}
+            {/* ─── LAYER 6: Void features ─── */}
             <G>
-              {/* Cloud layer 1 */}
-              {([460,490,522,555,588,620,652,682] as number[]).map((cx,i) => (
-                <G key={`cl1${i}`}>
-                  <Circle cx={cx}   cy={370} r={18} fill="#0c0505" opacity={0.78}/>
-                  <Circle cx={cx+9} cy={362} r={13} fill="#140808" opacity={0.72}/>
-                </G>
-              ))}
-              {/* Cloud layer 2 */}
-              {([472,506,540,576,612,646,680] as number[]).map((cx,i) => (
-                <Circle key={`cl2${i}`} cx={cx} cy={398} r={15} fill="#180a0a" opacity={0.68}/>
-              ))}
-              {/* Lightning bolts */}
-              <Path d="M 418,378 L 408,418 L 424,414 L 412,460" stroke="#fbbf24" strokeWidth="3"   fill="none" opacity={0.85}/>
-              <Path d="M 418,378 L 408,418 L 424,414 L 412,460" stroke="#fef9c3" strokeWidth="1.2" fill="none" opacity={0.6}/>
-              <Path d="M 530,394 L 520,436 L 536,432 L 524,478" stroke="#f59e0b" strokeWidth="2.5" fill="none" opacity={0.75}/>
-              <Path d="M 530,394 L 520,436 L 536,432 L 524,478" stroke="#fef08a" strokeWidth="1"   fill="none" opacity={0.5}/>
-              <Path d="M 646,380 L 636,422 L 651,418 L 639,464" stroke="#fbbf24" strokeWidth="2.5" fill="none" opacity={0.7}/>
-              {/* Lightning ambient glow */}
-              <Ellipse cx="415" cy="480" rx="32" ry="10" fill="#fbbf24" opacity={0.06}/>
-              {/* Rain */}
-              {STORM_RAIN.map(([rx,ry],i) => (
-                <Rect key={i} x={rx} y={ry} width={2} height={11} fill="#fca5a5" opacity={0.3} rx={1}
-                  transform={`rotate(-18 ${rx} ${ry})`}/>
-              ))}
-              {/* Flooded ground */}
-              <Ellipse cx="510" cy="660" rx="62" ry="20" fill="#1e3a5f" opacity={0.5}/>
-              <Ellipse cx="510" cy="660" rx="46" ry="14" fill="#1d4ed8" opacity={0.22}/>
-              <Ellipse cx="620" cy="680" rx="42" ry="14" fill="#1e3a5f" opacity={0.42}/>
-              <Ellipse cx="380" cy="685" rx="28" ry="10" fill="#1e3a5f" opacity={0.38}/>
-              {/* Lightning reflection on water */}
-              <Ellipse cx="418" cy="668" rx="28" ry="8" fill="#fbbf24" opacity={0.06}/>
+              {/* Nebula blobs */}
+              <Ellipse cx={388} cy={240} rx={45} ry={22} fill="#7c3aed" opacity={0.1} />
+              <Ellipse cx={425} cy={268} rx={35} ry={16} fill="#6d28d9" opacity={0.09} />
+              <Ellipse cx={475} cy={250} rx={40} ry={18} fill="#4f46e5" opacity={0.09} />
+              {/* Dark void lake */}
+              <Ellipse cx={438} cy={462} rx={55} ry={18} fill="#0d0b2a" opacity={0.9} />
+              <Ellipse cx={438} cy={462} rx={42} ry={13} fill="#1e1b4b" opacity={0.6} />
+              <Ellipse cx={438} cy={458} rx={28} ry={7}  fill="#4c1d95" opacity={0.35} />
+              {/* Star reflections */}
+              <Circle cx={425} cy={463} r={1}   fill="#c4b5fd" opacity={0.5} />
+              <Circle cx={448} cy={460} r={1}   fill="#a78bfa" opacity={0.5} />
+              <Circle cx={436} cy={468} r={0.8} fill="#818cf8" opacity={0.45} />
+              {/* Crystal formations at ground */}
+              <Polygon points="362,455 358,435 366,435" fill="#7c3aed" opacity={0.7} />
+              <Polygon points="362,455 358,440 366,440" fill="#a78bfa" opacity={0.35} />
+              <Polygon points="378,458 373,438 383,438" fill="#6d28d9" opacity={0.65} />
+              <Polygon points="378,458 373,443 383,443" fill="#c4b5fd" opacity={0.3} />
+              <Polygon points="505,458 500,436 510,436" fill="#7c3aed" opacity={0.6} />
+              <Polygon points="505,458 500,442 510,442" fill="#a78bfa" opacity={0.3} />
+              <Polygon points="518,455 514,438 522,438" fill="#6d28d9" opacity={0.55} />
+              {/* Void mist */}
+              <Rect x={350} y={418} width={175} height={282} fill="url(#mistVoid)" />
             </G>
 
-            {/* ═══ Dividers + mountain range ═══ */}
+            {/* ─── LAYER 6: Storm features ─── */}
             <G>
-              <Rect x="347" y="0"   width="6" height="700" fill="#0a0f1e" opacity={0.65}/>
-              <Rect x="0"   y="347" width="700" height="6"  fill="#0a0f1e" opacity={0.65}/>
-              {/* Horizontal mountain range */}
-              {HMTN_XS.map((cx,i) => (
-                <G key={`mh${i}`}>
-                  <Polygon points={`${cx-14},354 ${cx},328 ${cx+14},354`} fill="#1e293b" opacity={0.8}/>
-                  <Polygon points={`${cx-5},333 ${cx},328 ${cx+5},333`}   fill="#f1f5f9" opacity={0.65}/>
-                </G>
-              ))}
-              {/* Vertical mountain range */}
-              {VMTN_YS.map((cy,i) => (
-                <G key={`mv${i}`}>
-                  <Polygon points={`354,${cy-14} 328,${cy} 354,${cy+14}`} fill="#1e293b" opacity={0.8}/>
-                  <Polygon points={`333,${cy-4} 328,${cy} 333,${cy+4}`}   fill="#f1f5f9" opacity={0.65}/>
-                </G>
-              ))}
-              {/* Central volcanic peak */}
-              <Polygon points="334,362 350,328 366,362" fill="#0f172a" opacity={0.95}/>
-              <Polygon points="344,347 350,328 356,347" fill="#f8fafc" opacity={0.75}/>
-              {/* Peak glow (lava) */}
-              <Ellipse cx="350" cy="362" rx="10" ry="4" fill="#ef4444" opacity={0.18}/>
+              {/* Flooded ground puddles */}
+              <Ellipse cx={562} cy={468} rx={38} ry={12} fill="#1e3a5f" opacity={0.55} />
+              <Ellipse cx={562} cy={468} rx={28} ry={8}  fill="#1d4ed8" opacity={0.22} />
+              <Ellipse cx={638} cy={475} rx={30} ry={10} fill="#1e3a5f" opacity={0.48} />
+              <Ellipse cx={688} cy={470} rx={20} ry={7}  fill="#1e3a5f" opacity={0.42} />
+              {/* Lightning reflection on puddle */}
+              <Ellipse cx={558} cy={472} rx={20} ry={5}  fill="#fbbf24" opacity={0.07} />
+              {/* Ambient storm glow */}
+              <Ellipse cx={560} cy={420} rx={45} ry={15} fill="#fbbf24" opacity={0.05} />
             </G>
+
+            {/* ─── LAYER 7: Zone name labels ─── */}
+            {[
+              { zone: 'Garden',  x: ZW * 0.5,       y: 24 },
+              { zone: 'Archive', x: ZW + ZW * 0.5,  y: 24 },
+              { zone: 'Void',    x: ZW * 2 + ZW*0.5, y: 24 },
+              { zone: 'Storm',   x: ZW * 3 + ZW*0.5, y: 24 },
+            ].map(({ zone, x, y }) => (
+              <G key={zone}>
+                <Rect x={x - 30} y={y - 12} width={60} height={18} rx={9}
+                  fill={ZONE_COLOR[zone] + '15'} />
+              </G>
+            ))}
 
             {/* ─── User-placed buildings ─── */}
             {buildings.map(b => {
-              if (b.type === 'house') return <HouseShape key={b.id} x={b.x} y={b.y}/>
-              if (b.type === 'rock')  return <RockShape  key={b.id} x={b.x} y={b.y}/>
-              if (b.type === 'fire')  return <FireShape  key={b.id} x={b.x} y={b.y}/>
-              return <ExtraTreeShape key={b.id} x={b.x} y={b.y}/>
+              if (b.type === 'house') return <HouseShape key={b.id} x={b.x} y={b.y} />
+              if (b.type === 'rock')  return <RockShape  key={b.id} x={b.x} y={b.y} />
+              if (b.type === 'fire')  return <FireShape  key={b.id} x={b.x} y={b.y} />
+              return <ExtraTreeShape key={b.id} x={b.x} y={b.y} />
             })}
           </Svg>
 
-          {/* ── Zone labels ── */}
+          {/* ── Zone labels (React Native, over SVG) ── */}
           {[
-            { zone: 'Garden',  left: 10, top: 6   },
-            { zone: 'Void',    left: 358, top: 6   },
-            { zone: 'Archive', left: 10, top: 358  },
-            { zone: 'Storm',   left: 358, top: 358 },
+            { zone: 'Garden',  left: ZW * 0 + ZW/2 - 28, top: 16 },
+            { zone: 'Archive', left: ZW * 1 + ZW/2 - 28, top: 16 },
+            { zone: 'Void',    left: ZW * 2 + ZW/2 - 22, top: 16 },
+            { zone: 'Storm',   left: ZW * 3 + ZW/2 - 30, top: 16 },
           ].map(({ zone, left, top }) => (
             <View key={zone} style={[styles.zoneLabel, { left, top }]}>
               <Text style={[styles.zoneName, { color: ZONE_COLOR[zone] }]}>
@@ -662,10 +659,9 @@ export default function WorldScreen() {
           {entities.map(entity => {
             const pos = posRef.current[entity.id]
             if (!pos) return null
-            const color = emotionColor(entity.emotional_state?.emotion)
-            // Grows with generation AND age (capped at +14px total)
-            const sz    = NODE + Math.min(entity.generation * 2 + (entity.age_ticks ?? 0) * 0.08, 14)
-            const szH   = sz / 2
+            const color    = emotionColor(entity.emotional_state?.emotion)
+            const sz       = NODE + Math.min(entity.generation * 2 + (entity.age_ticks ?? 0) * 0.06, 12)
+            const szH      = sz / 2
             const selected = popup?.id === entity.id
             return (
               <Animated.View key={entity.id} style={[styles.entityWrap, { left: pos.x, top: pos.y }]}>
@@ -673,28 +669,20 @@ export default function WorldScreen() {
                   onPress={() => setPopup(p => p?.id === entity.id ? null : entity)}
                   style={styles.entityInner}
                 >
-                  {/* Selection ring */}
                   {selected && (
                     <View style={[styles.entitySelect, {
-                      width: sz + 22, height: sz + 22,
-                      borderRadius: (sz + 22) / 2,
-                      top: -szH - 11, left: -szH - 11,
-                      borderColor: color,
-                    }]}/>
+                      width: sz + 20, height: sz + 20, borderRadius: (sz + 20) / 2,
+                      top: -szH - 10, left: -szH - 10, borderColor: color,
+                    }]} />
                   )}
-                  {/* Glow halo */}
                   <View style={[styles.entityGlow, {
-                    width: sz + 14, height: sz + 14,
-                    borderRadius: (sz + 14) / 2,
-                    top: -szH - 7, left: -szH - 7,
-                    borderColor: color + '55', shadowColor: color,
-                  }]}/>
-                  {/* Core */}
+                    width: sz + 12, height: sz + 12, borderRadius: (sz + 12) / 2,
+                    top: -szH - 6, left: -szH - 6, borderColor: color + '55', shadowColor: color,
+                  }]} />
                   <View style={[styles.entityCore, {
                     width: sz, height: sz, borderRadius: szH,
                     backgroundColor: color, shadowColor: color,
-                  }]}/>
-                  {/* Name */}
+                  }]} />
                   <Text style={[styles.entityLabel, { color }]} numberOfLines={1}>
                     {entity.name}
                   </Text>
@@ -703,7 +691,7 @@ export default function WorldScreen() {
             )
           })}
 
-          {/* Build overlay hint */}
+          {/* Build overlay */}
           {buildMode && (
             <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.buildOverlay]}>
               <Text style={styles.buildHint}>
@@ -718,11 +706,8 @@ export default function WorldScreen() {
       {buildMode && (
         <View style={styles.buildToolbar}>
           {(['house', 'rock', 'fire', 'tree'] as BuildType[]).map(type => (
-            <Pressable
-              key={type}
-              onPress={() => setSelectedBuild(type)}
-              style={[styles.buildTypeBtn, selectedBuild === type && styles.buildTypeBtnActive]}
-            >
+            <Pressable key={type} onPress={() => setSelectedBuild(type)}
+              style={[styles.buildTypeBtn, selectedBuild === type && styles.buildTypeBtnActive]}>
               <Text style={styles.buildTypeEmoji}>{BUILD_EMOJI[type]}</Text>
               <Text style={styles.buildTypeLabel}>{BUILD_LABEL[type]}</Text>
             </Pressable>
@@ -734,11 +719,31 @@ export default function WorldScreen() {
         </View>
       )}
 
+      {/* ── Live event ticker ── */}
+      {latestEvent && !popup && (
+        <View style={styles.ticker}>
+          <Text style={styles.tickerText} numberOfLines={1}>
+            {latestEvent.type === 'encounter'
+              ? `⚡ ${(latestEvent.entity_a as any)?.name} & ${(latestEvent.entity_b as any)?.name}`
+              : latestEvent.type === 'entity_born' || latestEvent.type === 'birth'
+              ? `✨ ${latestEvent.name} nació`
+              : latestEvent.type === 'entity_died' || latestEvent.type === 'death'
+              ? `🌑 ${latestEvent.name} partió`
+              : latestEvent.type === 'entity_thought' || latestEvent.type === 'thought'
+              ? `💭 ${latestEvent.name}: ${String(latestEvent.thought ?? '').slice(0, 55)}`
+              : latestEvent.type === 'entity_grief' || latestEvent.type === 'grief'
+              ? `💔 ${latestEvent.griever} llora a ${latestEvent.lost}`
+              : String(latestEvent.description ?? latestEvent.type).slice(0, 70)
+            }
+          </Text>
+        </View>
+      )}
+
       {/* ── Entity popup ── */}
       {popup && (
         <View style={styles.popup}>
           <View style={styles.popupHeader}>
-            <View style={[styles.popupDot, { backgroundColor: emotionColor(popup.emotional_state?.emotion) }]}/>
+            <View style={[styles.popupDot, { backgroundColor: emotionColor(popup.emotional_state?.emotion) }]} />
             <Text style={styles.popupName}>{popup.name}</Text>
             <Text style={styles.popupEmotion}>{popup.emotional_state?.emotion ?? '—'}</Text>
             <Pressable onPress={() => setPopup(null)} style={styles.popupClose}>
@@ -746,36 +751,47 @@ export default function WorldScreen() {
             </Pressable>
           </View>
           <Text style={styles.popupMeta}>
-            ⚡ {Math.round(popup.energy ?? 0)} · Gen {popup.generation ?? 0} · Edad {popup.age_ticks ?? 0} · {ZONE_NAME_ES[popup.current_zone] ?? popup.current_zone}
+            ⚡ {Math.round(popup.energy ?? 0)} · Gen {popup.generation} · Edad {popup.age_ticks} · {ZONE_NAME_ES[popup.current_zone] ?? popup.current_zone}
           </Text>
+          {(popup as any).current_goal && (
+            <Text style={styles.popupGoal} numberOfLines={1}>🎯 {(popup as any).current_goal}</Text>
+          )}
           {!!popup.last_thought && (
-            <Text style={styles.popupThought} numberOfLines={3}>
-              "{popup.last_thought}"
-            </Text>
+            <Text style={styles.popupThought} numberOfLines={3}>"{popup.last_thought}"</Text>
           )}
           {!!popup.current_desire && (
-            <Text style={styles.popupDesire} numberOfLines={1}>
-              Desea: {popup.current_desire}
-            </Text>
+            <Text style={styles.popupDesire} numberOfLines={1}>Desea: {popup.current_desire}</Text>
           )}
+          {/* Relationship count */}
+          {(() => {
+            const rels = (popup as any).relationships ?? {}
+            const count = Object.keys(rels).length
+            if (count === 0) return null
+            const friends = Object.values(rels).filter((r: any) => r.valence === 'friend').length
+            const family  = Object.values(rels).filter((r: any) => r.valence === 'family').length
+            const rivals  = Object.values(rels).filter((r: any) => r.valence === 'rival').length
+            return (
+              <View style={styles.popupRels}>
+                {family  > 0 && <Text style={styles.popupRelItem}>💜 {family}</Text>}
+                {friends > 0 && <Text style={styles.popupRelItem}>💚 {friends}</Text>}
+                {rivals  > 0 && <Text style={styles.popupRelItem}>⚔️ {rivals}</Text>}
+              </View>
+            )
+          })()}
           <View style={styles.popupActions}>
-            <Pressable
-              style={styles.popupBtnFeed}
-              onPress={() => { feedEntity(popup.id); setPopup(null) }}
-            >
+            <Pressable style={styles.popupBtnFeed}
+              onPress={() => { feedEntity(popup.id); setPopup(null) }}>
               <Text style={styles.popupBtnTxt}>🍎 Alimentar</Text>
             </Pressable>
-            <Pressable
-              style={styles.popupBtnDetail}
-              onPress={() => { setPopup(null); router.push(`/entity/${popup.id}`) }}
-            >
+            <Pressable style={styles.popupBtnDetail}
+              onPress={() => { setPopup(null); router.push(`/entity/${popup.id}`) }}>
               <Text style={styles.popupBtnTxt}>Ver más →</Text>
             </Pressable>
           </View>
         </View>
       )}
 
-      {/* ── Zoom + Build controls ── */}
+      {/* ── Controls ── */}
       <View style={styles.zoomCtrl}>
         <Pressable onPress={() => zoom(1.35)} style={styles.zoomBtn}>
           <Text style={styles.zoomTxt}>+</Text>
@@ -786,10 +802,8 @@ export default function WorldScreen() {
         <Pressable onPress={resetView} style={styles.zoomBtn}>
           <Text style={[styles.zoomTxt, { fontSize: 14 }]}>↺</Text>
         </Pressable>
-        <Pressable
-          onPress={() => setBuildMode(!buildMode)}
-          style={[styles.zoomBtn, buildMode && styles.zoomBtnActive]}
-        >
+        <Pressable onPress={() => setBuildMode(!buildMode)}
+          style={[styles.zoomBtn, buildMode && styles.zoomBtnActive]}>
           <Text style={styles.zoomTxt}>🏗</Text>
         </Pressable>
       </View>
@@ -798,13 +812,13 @@ export default function WorldScreen() {
 }
 
 const styles = StyleSheet.create({
-  container:   { flex: 1, backgroundColor: COLORS.bg },
+  container: { flex: 1, backgroundColor: COLORS.bg },
   header: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 14, paddingTop: 10, paddingBottom: 8,
     borderBottomWidth: 1, borderBottomColor: COLORS.border,
   },
-  headerTitle: { fontSize: 17, fontWeight: '800', color: '#22d3ee' },
+  headerTitle: { fontSize: 17, fontWeight: '800', color: '#22d3ee', letterSpacing: 0.5 },
   headerSub:   { fontSize: 11, color: COLORS.textMuted },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   dotLive:     { width: 8, height: 8, borderRadius: 4, backgroundColor: '#22c55e' },
@@ -815,34 +829,27 @@ const styles = StyleSheet.create({
   apiBadgeOff: { backgroundColor: '#1c1917', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
   apiTxtOff:   { fontSize: 10, color: COLORS.textDim },
 
-  canvasWrap:  { flex: 1, overflow: 'hidden' },
-  canvas:      { width: CANVAS, height: CANVAS, position: 'absolute', top: 0, left: 0 },
+  canvasWrap: { flex: 1, overflow: 'hidden' },
+  canvas:     { width: W, height: H, position: 'absolute', top: 0, left: 0 },
 
-  zoneLabel:   { position: 'absolute' },
-  zoneName:    {
-    fontSize: 13, fontWeight: '800', letterSpacing: 0.4,
+  zoneLabel: { position: 'absolute' },
+  zoneName: {
+    fontSize: 12, fontWeight: '800', letterSpacing: 0.5,
     textShadowColor: '#000', textShadowRadius: 4, textShadowOffset: { width: 0, height: 1 },
   },
 
   entityWrap:   { position: 'absolute', alignItems: 'center' },
   entityInner:  { alignItems: 'center' },
   entitySelect: { position: 'absolute', borderWidth: 2, borderStyle: 'dashed' },
-  entityGlow: {
-    position: 'absolute', borderWidth: 1,
-    shadowOpacity: 0.7, shadowRadius: 6, shadowOffset: { width: 0, height: 0 },
-  },
-  entityCore: {
-    shadowOpacity: 0.9, shadowRadius: 8,
-    shadowOffset: { width: 0, height: 0 }, elevation: 8,
-  },
-  entityLabel: {
-    marginTop: 5, fontSize: 9, fontWeight: '600',
-    maxWidth: 62, textAlign: 'center',
+  entityGlow:   { position: 'absolute', borderWidth: 1, shadowOpacity: 0.7, shadowRadius: 6, shadowOffset: { width: 0, height: 0 } },
+  entityCore:   { shadowOpacity: 0.9, shadowRadius: 8, shadowOffset: { width: 0, height: 0 }, elevation: 8 },
+  entityLabel:  {
+    marginTop: 5, fontSize: 9, fontWeight: '600', maxWidth: 58, textAlign: 'center',
     textShadowColor: '#000', textShadowRadius: 3, textShadowOffset: { width: 0, height: 1 },
   },
 
   buildOverlay: { justifyContent: 'flex-end', paddingBottom: 12, alignItems: 'center' },
-  buildHint:    {
+  buildHint: {
     fontSize: 11, color: '#22d3ee',
     backgroundColor: '#020b18cc', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8,
   },
@@ -851,18 +858,21 @@ const styles = StyleSheet.create({
     gap: 8, paddingHorizontal: 12, paddingVertical: 8,
     backgroundColor: COLORS.bgCard, borderTopWidth: 1, borderTopColor: COLORS.border,
   },
-  buildTypeBtn: {
-    alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6,
-    borderRadius: 10, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.bg,
-  },
+  buildTypeBtn:       { alignItems: 'center', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.bg },
   buildTypeBtnActive: { backgroundColor: '#052e16', borderColor: '#22c55e' },
   buildTypeEmoji:     { fontSize: 18 },
   buildTypeLabel:     { fontSize: 9, color: COLORS.textMuted, marginTop: 2 },
 
-  // Entity popup
+  ticker: {
+    position: 'absolute', bottom: 88, left: 12, right: 66,
+    backgroundColor: '#020b18d8', borderRadius: 10, borderWidth: 1, borderColor: COLORS.border,
+    paddingHorizontal: 12, paddingVertical: 6,
+  },
+  tickerText: { fontSize: 11, color: COLORS.textMuted, fontStyle: 'italic' },
+
   popup: {
     position: 'absolute', bottom: 82, left: 12, right: 12,
-    backgroundColor: '#020b18f2', borderRadius: 14,
+    backgroundColor: '#020b18f5', borderRadius: 14,
     borderWidth: 1, borderColor: COLORS.border, padding: 14,
   },
   popupHeader:  { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 5 },
@@ -871,36 +881,26 @@ const styles = StyleSheet.create({
   popupEmotion: { fontSize: 11, color: COLORS.textMuted, textTransform: 'capitalize' },
   popupClose:   { padding: 4 },
   popupCloseTxt:{ fontSize: 14, color: COLORS.textDim },
-  popupMeta:    { fontSize: 10, color: COLORS.textDim, marginBottom: 6 },
-  popupThought: {
-    fontSize: 12, color: COLORS.text, fontStyle: 'italic',
-    marginBottom: 4, lineHeight: 17,
-  },
-  popupDesire:  { fontSize: 11, color: COLORS.textMuted, marginBottom: 10 },
+  popupMeta:    { fontSize: 10, color: COLORS.textDim, marginBottom: 5 },
+  popupGoal:    { fontSize: 11, color: '#34d399', marginBottom: 4 },
+  popupThought: { fontSize: 12, color: COLORS.text, fontStyle: 'italic', marginBottom: 4, lineHeight: 17 },
+  popupDesire:  { fontSize: 11, color: COLORS.textMuted, marginBottom: 6 },
+  popupRels:    { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  popupRelItem: { fontSize: 12, color: COLORS.textMuted },
   popupActions: { flexDirection: 'row', gap: 8 },
-  popupBtnFeed: {
-    flex: 1, backgroundColor: '#052e16', borderRadius: 8,
-    paddingVertical: 8, alignItems: 'center',
-    borderWidth: 1, borderColor: '#166534',
-  },
-  popupBtnDetail: {
-    flex: 1, backgroundColor: '#0c1a2e', borderRadius: 8,
-    paddingVertical: 8, alignItems: 'center',
-    borderWidth: 1, borderColor: COLORS.border,
-  },
+  popupBtnFeed: { flex: 1, backgroundColor: '#052e16', borderRadius: 8, paddingVertical: 8, alignItems: 'center', borderWidth: 1, borderColor: '#166534' },
+  popupBtnDetail:{ flex: 1, backgroundColor: '#0c1a2e', borderRadius: 8, paddingVertical: 8, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border },
   popupBtnTxt: { fontSize: 12, fontWeight: '700', color: COLORS.text },
 
   zoomCtrl: { position: 'absolute', bottom: 24, right: 14, gap: 8 },
   zoomBtn: {
     width: 42, height: 42, borderRadius: 21,
-    backgroundColor: COLORS.bgCard + 'ee',
-    borderWidth: 1, borderColor: COLORS.border,
+    backgroundColor: COLORS.bgCard + 'ee', borderWidth: 1, borderColor: COLORS.border,
     alignItems: 'center', justifyContent: 'center',
   },
   zoomBtnActive: { backgroundColor: '#052e16', borderColor: '#22c55e' },
-  zoomTxt:       { fontSize: 20, color: COLORS.text, fontWeight: '300', lineHeight: 26 },
+  zoomTxt: { fontSize: 20, color: COLORS.text, fontWeight: '300', lineHeight: 26 },
 
-  // Away banner
   awayBanner: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: '#0c1a2e', borderBottomWidth: 1, borderBottomColor: '#1d4ed8',
