@@ -1,9 +1,9 @@
 /**
- * World v22 — Rotating census ticker, entity mood rings.
- * The header subtitle cycles through world statistics every 4 seconds
- * (population → avg energy → max generation → most populous zone).
- * Each entity gets a spinning mood ring: speed and color reflect their
- * current emotional state — joy spins fast, calm drifts slow.
+ * World v23 — Birth location stamps, entity energy aura glow.
+ * When a birth event fires, a ✦ glyph stamps at that zone and fades
+ * over 8 seconds — leaving a trace of where life began. Entity energy
+ * aura border width now scales with energy: high energy = thick bright
+ * border, low = thin dim border.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -249,6 +249,7 @@ interface Bird         { id: number; y: number; anim: Animated.Value }
 interface NebWisp      { id: number; x: number; y: number; color: string; len: number; angle: number; anim: Animated.Value }
 interface DesireWisp   { id: number; x: number; y: number; text: string; anim: Animated.Value }
 interface TrailEcho    { id: number; x: number; y: number; color: string; anim: Animated.Value }
+interface BirthStamp   { id: number; x: number; y: number; color: string; anim: Animated.Value }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function WorldScreen() {
@@ -282,6 +283,8 @@ export default function WorldScreen() {
   const nextNebId = useRef(0)
   const [desireWisps, setDesireWisps] = useState<DesireWisp[]>([])
   const nextDesireId = useRef(0)
+  const [birthStamps, setBirthStamps] = useState<BirthStamp[]>([])
+  const nextStampId = useRef(0)
   const portalBurstAnim = useRef(new Animated.Value(0)).current
   const [trailEchoes, setTrailEchoes] = useState<TrailEcho[]>([])
   const nextTrailId = useRef(0)
@@ -848,6 +851,12 @@ export default function WorldScreen() {
       Animated.timing(s.anim, { toValue: 1, duration: 800, useNativeDriver: true })
         .start(() => setSparks(prev => prev.filter(x => x.id !== s.id)))
     })
+    // Leave a birth stamp at location
+    const stampAnim = new Animated.Value(1)
+    const stampId = nextStampId.current++
+    setBirthStamps(prev => [...prev.slice(-8), { id: stampId, x: cx, y: cy, color, anim: stampAnim }])
+    Animated.timing(stampAnim, { toValue: 0, duration: 8000, useNativeDriver: true })
+      .start(() => setBirthStamps(prev => prev.filter(s => s.id !== stampId)))
   }, [liveEvents])
 
   // ── Death soul departure ──────────────────────────────────────────────────
@@ -1711,6 +1720,7 @@ export default function WorldScreen() {
                     width: sz + 16, height: sz + 16, borderRadius: (sz + 16) / 2,
                     top: -szH - 8, left: -szH - 8,
                     borderColor: energy > 60 ? color + '55' : energy > 30 ? '#a0aec066' : '#4a556855',
+                    borderWidth: energy > 70 ? 2 : energy > 40 ? 1 : 0.5,
                     shadowColor: energy > 60 ? color : energy > 30 ? '#a0aec0' : '#4a5568',
                     opacity: pulseGlowOpacity,
                     transform: [{ scale: energy > 70 ? 1.1 : energy < 30 ? 0.85 : 1 }],
@@ -1756,6 +1766,16 @@ export default function WorldScreen() {
                 { scale:      spark.anim.interpolate({ inputRange: [0,0.3,1], outputRange: [0.3,1.2,0.5] }) },
               ],
             }]} />
+          ))}
+
+          {/* Birth location stamps */}
+          {birthStamps.map(s => (
+            <Animated.View key={s.id} pointerEvents="none" style={{
+              position: 'absolute', left: s.x - 10, top: s.y - 14,
+              opacity: s.anim,
+            }}>
+              <Text style={[styles.birthStampGlyph, { color: s.color }]}>✦</Text>
+            </Animated.View>
           ))}
 
           {/* Death soul departure */}
@@ -2174,6 +2194,10 @@ const styles = StyleSheet.create({
   entityInner:  { alignItems: 'center' },
   moodRing: {
     position: 'absolute', borderWidth: 1, borderStyle: 'dashed',
+  },
+  birthStampGlyph: {
+    fontSize: 16, fontWeight: '300',
+    textShadowColor: '#000', textShadowRadius: 4, textShadowOffset: { width: 0, height: 0 },
   },
   elderRing: {
     position: 'absolute', borderWidth: 1.5, borderColor: '#fbbf24', borderStyle: 'dashed',
