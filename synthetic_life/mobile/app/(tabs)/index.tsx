@@ -1,7 +1,7 @@
 /**
- * World v6 — Storm rain, soul departure on death, grief hearts, storm pulse.
- * Rain streams loop endlessly in the Storm zone; entities leave a silver trail
- * when they die; grief events float a broken heart upward from the mourner.
+ * World v7 — Day/night atmospheric cycle, encounter relationship lines, Garden pollen.
+ * A 90-second day cycle washes the world in dawn/day/dusk tints; encounters draw
+ * glowing connection lines between entities; pollen drifts through the Garden.
  */
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -196,6 +196,8 @@ interface Spark     { id: number; x: number; y: number; dx: number; dy: number; 
 interface Firefly   { id: number; x: number; baseY: number; anim: Animated.Value }
 interface Soul      { id: number; x: number; y: number; dx: number; dy: number; anim: Animated.Value; color: string }
 interface GriefMark { id: number; x: number; y: number; anim: Animated.Value }
+interface RelLine   { id: number; x1: number; y1: number; x2: number; y2: number; color: string; anim: Animated.Value }
+interface Pollen    { id: number; x: number; baseY: number; anim: Animated.Value }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function WorldScreen() {
@@ -293,6 +295,16 @@ export default function WorldScreen() {
     return () => loop.stop()
   }, [])
 
+  // ── Day/night atmospheric cycle (90-second loop) ─────────────────────────
+  const dayNightAnim = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(dayNightAnim, { toValue: 1, duration: 90000, useNativeDriver: true })
+    )
+    loop.start()
+    return () => loop.stop()
+  }, [])
+
   // ── Storm rain streams ────────────────────────────────────────────────────
   const rainAnims = useRef(RAIN_STREAMS.map(() => new Animated.Value(0))).current
   useEffect(() => {
@@ -349,6 +361,28 @@ export default function WorldScreen() {
     const id = setInterval(spawn, 2200)
     return () => clearInterval(id)
   }, [])
+
+  // ── Garden pollen ─────────────────────────────────────────────────────────
+  const [pollen, setPollen] = useState<Pollen[]>([])
+  const nextPollenId = useRef(0)
+  useEffect(() => {
+    const spawn = () => {
+      const x     = 6 + Math.random() * 160
+      const baseY = 400 + Math.random() * 60
+      const anim  = new Animated.Value(0)
+      const pid   = nextPollenId.current++
+      setPollen(prev => [...prev.slice(-8), { id: pid, x, baseY, anim }])
+      Animated.timing(anim, { toValue: 1, duration: 4000 + Math.random() * 3000, useNativeDriver: true })
+        .start(() => setPollen(prev => prev.filter(p => p.id !== pid)))
+    }
+    spawn()
+    const id = setInterval(spawn, 1500)
+    return () => clearInterval(id)
+  }, [])
+
+  // ── Encounter relationship lines ──────────────────────────────────────────
+  const [relLines, setRelLines] = useState<RelLine[]>([])
+  const nextRelLineId = useRef(0)
 
   // ── Thought bubbles ───────────────────────────────────────────────────────
   const [bubbles, setBubbles] = useState<Bubble[]>([])
@@ -501,6 +535,17 @@ export default function WorldScreen() {
     })
     const valA  = (enc as any).relationship_a_to_b ?? 'neutral'
     const rColor = valA === 'friend' ? '#34d399' : valA === 'rival' ? '#f87171' : valA === 'family' ? '#a78bfa' : '#94a3b8'
+
+    // Relationship connection line
+    const lineAnim = new Animated.Value(0)
+    const lid = nextRelLineId.current++
+    setRelLines(prev => [...prev.slice(-4), { id: lid, x1: axV, y1: ayV, x2: bxV, y2: byV, color: rColor, anim: lineAnim }])
+    Animated.sequence([
+      Animated.timing(lineAnim, { toValue: 1, duration: 400,  useNativeDriver: true }),
+      Animated.delay(1200),
+      Animated.timing(lineAnim, { toValue: 0, duration: 700,  useNativeDriver: true }),
+    ]).start(() => setRelLines(prev => prev.filter(l => l.id !== lid)))
+
     const makeRipple = (delay: number) => {
       const sa = new Animated.Value(0.05), oa = new Animated.Value(delay === 0 ? 0.85 : 0.5)
       const rid = nextRippleId.current++
@@ -615,6 +660,10 @@ export default function WorldScreen() {
   const latestEvent = liveEvents[0] ?? null
   const pulseGlowOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.25, 0.72] })
   const stormOpacity     = stormPulse.interpolate({ inputRange: [0, 1], outputRange: [0, 0.2] })
+  // Day/night derived opacities (90-second cycle: night → dawn → day → dusk → night)
+  const dawnOpacity = dayNightAnim.interpolate({ inputRange: [0, 0.15, 0.28, 0.38, 1], outputRange: [0, 0.09, 0.06, 0, 0] })
+  const dayOpacity  = dayNightAnim.interpolate({ inputRange: [0, 0.35, 0.52, 0.65, 1], outputRange: [0, 0, 0.04, 0, 0] })
+  const duskOpacity = dayNightAnim.interpolate({ inputRange: [0, 0.65, 0.78, 0.90, 1], outputRange: [0, 0, 0.08, 0.04, 0] })
 
   const zoneCounts = ZONES.reduce((acc, z) => {
     acc[z] = entities.filter(e => e.current_zone === z).length
@@ -856,6 +905,18 @@ export default function WorldScreen() {
             }]} />
           ))}
 
+          {/* Garden pollen */}
+          {pollen.map(p => (
+            <Animated.View key={p.id} style={[styles.pollen, {
+              left: p.x, top: p.baseY,
+              opacity: p.anim.interpolate({ inputRange: [0, 0.12, 0.8, 1], outputRange: [0, 0.8, 0.5, 0] }),
+              transform: [
+                { translateY: p.anim.interpolate({ inputRange: [0, 1], outputRange: [0, -32] }) },
+                { translateX: p.anim.interpolate({ inputRange: [0, 0.25, 0.5, 0.75, 1], outputRange: [0, 5, 0, -5, 0] }) },
+              ],
+            }]} />
+          ))}
+
           {/* Storm animated rain streams */}
           {RAIN_STREAMS.map((s, i) => (
             <Animated.View key={`rs${i}`} style={[styles.rainStream, {
@@ -879,6 +940,25 @@ export default function WorldScreen() {
               transform: [{ scale: r.scaleAnim }],
             }]} />
           ))}
+
+          {/* Encounter relationship lines */}
+          {relLines.map(line => {
+            const dx  = line.x2 - line.x1
+            const dy  = line.y2 - line.y1
+            const len = Math.sqrt(dx * dx + dy * dy)
+            const ang = Math.atan2(dy, dx) * (180 / Math.PI)
+            const mx  = (line.x1 + line.x2) / 2
+            const my  = (line.y1 + line.y2) / 2
+            return (
+              <Animated.View key={line.id} style={[styles.relLine, {
+                left: mx - len / 2, top: my - 1.5, width: len,
+                backgroundColor: line.color,
+                shadowColor: line.color,
+                opacity: line.anim.interpolate({ inputRange: [0, 0.1, 0.7, 1], outputRange: [0, 0.7, 0.45, 0] }),
+                transform: [{ rotate: `${ang}deg` }],
+              }]} />
+            )
+          })}
 
           {/* Entities */}
           {entities.map(entity => {
@@ -1093,6 +1173,11 @@ export default function WorldScreen() {
         </Animated.View>
       )}
 
+      {/* ── Day/night atmospheric overlays ── */}
+      <Animated.View pointerEvents="none" style={[styles.dawnOverlay, { opacity: dawnOpacity }]} />
+      <Animated.View pointerEvents="none" style={[styles.dayOverlay,  { opacity: dayOpacity  }]} />
+      <Animated.View pointerEvents="none" style={[styles.duskOverlay, { opacity: duskOpacity }]} />
+
       {/* ── Controls ── */}
       <View style={styles.zoomCtrl}>
         <Pressable onPress={() => zoom(1.35)} style={styles.zoomBtn}>
@@ -1179,8 +1264,20 @@ const styles = StyleSheet.create({
     position: 'absolute', width: 5, height: 5, borderRadius: 2.5,
     shadowColor: '#cbd5e1', shadowOpacity: 0.6, shadowRadius: 3, shadowOffset: { width: 0, height: 0 },
   },
+  pollen: {
+    position: 'absolute', width: 3, height: 3, borderRadius: 1.5,
+    backgroundColor: '#fde68a',
+    shadowColor: '#fbbf24', shadowOpacity: 0.8, shadowRadius: 3, shadowOffset: { width: 0, height: 0 },
+  },
+  relLine: {
+    position: 'absolute', height: 3, borderRadius: 1.5,
+    shadowOpacity: 0.7, shadowRadius: 5, shadowOffset: { width: 0, height: 0 },
+  },
   griefMark:  { position: 'absolute' },
   griefEmoji: { fontSize: 14 },
+  dawnOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#c084fc' },
+  dayOverlay:  { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#60a5fa' },
+  duskOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#f97316' },
 
   entityWrap:   { position: 'absolute', alignItems: 'center' },
   entityInner:  { alignItems: 'center' },
