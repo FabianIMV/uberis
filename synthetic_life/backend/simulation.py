@@ -12,7 +12,12 @@ from typing import Any, Dict, List, Optional, Set
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from entity_brain import generate_dying_message, generate_encounter_dialogue, think
+from entity_brain import (
+    consolidate_memories,
+    generate_dying_message,
+    generate_encounter_dialogue,
+    think,
+)
 from evolution import (
     calculate_energy_drain,
     create_offspring_genome,
@@ -37,9 +42,11 @@ ws_connections: Set[Any] = set()
 _sim_task: Optional[asyncio.Task] = None
 _running: bool = False
 
-TICK_INTERVAL: int = 8          # seconds per tick
+TICK_INTERVAL: int = 8
 MAX_POPULATION: int = 20
-THINK_EVERY_N_TICKS: int = 3    # entity calls LLM every N ticks
+THINK_EVERY_N_TICKS: int = 3
+MEMORY_CONSOLIDATION_THRESHOLD: int = 18   # compress when memory exceeds this
+MEMORY_CONSOLIDATION_EVERY: int = 15        # check every N ticks per entity
 
 SEED_GENOMES = [
     {"curiosity": 0.90, "aggression": 0.10, "empathy": 0.80, "creativity": 0.70, "survival_drive": 0.60},
@@ -96,8 +103,10 @@ async def seed_entities(session: AsyncSession) -> None:
             generation=0,
             genome=genome,
             memory=[],
+            memory_archive=[],
             beliefs={"existence": "I am. That is the first and most certain thing."},
             emotional_state={"emotion": "wonder", "intensity": 0.8},
+            relationships={},
             energy=100.0,
             current_zone=zones[i % len(zones)],
             is_alive=True,
@@ -108,6 +117,37 @@ async def seed_entities(session: AsyncSession) -> None:
     logger.info("Seeded 5 initial entities.")
 
 
+# ─── Relationship helpers ──────────────────────────────────────────────────
+
+def _update_relationship(
+    entity_a: Entity,
+    entity_b: Entity,
+    result: Dict,
+    tick_n: int,
+) -> None:
+    """Update both entities' relationship records after an encounter."""
+    intensity_change = result.get("relationship_intensity_change", 0.0)
+
+    for entity, other, valence_key, memory_key in [
+        (entity_a, entity_b, "relationship_a_to_b", "a_memory"),
+        (entity_b, entity_a, "relationship_b_to_a", "b_memory"),
+    ]:
+        rels = dict(entity.relationships or {})
+        key = str(other.id)
+        existing = rels.get(key, {"encounters": 0, "intensity": 0.2})
+
+        new_intensity = min(1.0, max(0.0, existing.get("intensity", 0.2) + intensity_change))
+        rels[key] = {
+            "name": other.name,
+            "valence": result.get(valence_key, existing.get("valence", "neutral")),
+            "intensity": round(new_intensity, 3),
+            "encounters": existing.get("encounters", 0) + 1,
+            "last_tick": tick_n,
+            "key_memory": (result.get(memory_key, "") or "")[:120],
+        }
+        entity.relationships = rels
+
+
 # ─── Main tick ─────────────────────────────────────────────────────────────
 
 async def tick() -> None:
@@ -116,10 +156,7 @@ async def tick() -> None:
         current_tick = world_state.current_tick + 1
         world_state.current_tick = current_tick
 
-        # Load all living entities
-        result = await session.execute(
-            select(Entity).where(Entity.is_alive == True)
-        )
+        result = await session.execute(select(Entity).where(Entity.is_alive == True))
         entities: List[Entity] = list(result.scalars().all())
 
         if not entities:
@@ -153,7 +190,6 @@ async def tick() -> None:
         await session.flush()
 
         # ── Encounters ────────────────────────────────────────────────────
-        # Refresh living list after possible deaths
         result2 = await session.execute(select(Entity).where(Entity.is_alive == True))
         living: List[Entity] = list(result2.scalars().all())
 
@@ -191,17 +227,11 @@ async def _process_entity(
 ) -> None:
     zone_data = ZONES.get(entity.current_zone, ZONES["Garden"])
 
-    # Zone energy effect
     entity.energy += zone_data["energy_effect"]
 
-    # World event effect
     if active_event:
         event_zone = active_event.affected_zone
         if event_zone is None or event_zone == entity.current_zone:
-            template = next(
-                (e for e in [active_event] if True), None
-            )
-            # Pull effect from world_events list
             from world import WORLD_EVENTS as WE
             tmpl = next((e for e in WE if e["type"] == active_event.event_type), None)
             if tmpl:
@@ -211,15 +241,24 @@ async def _process_entity(
                     "intensity": 0.75,
                 }
             mem = list(entity.memory or [])
-            mem.append(
-                f"A {active_event.event_type} came — {active_event.description[:90]}"
-            )
-            entity.memory = mem[-10:]
+            mem.append(f"A {active_event.event_type} came — {active_event.description[:90]}")
+            entity.memory = mem
 
-    # Trait-based energy drain
     drain = calculate_energy_drain(entity)
     entity.energy = max(0.0, min(100.0, entity.energy - drain))
     entity.age_ticks = (entity.age_ticks or 0) + 1
+
+    # ── Memory consolidation ───────────────────────────────────────────────
+    if tick_n % MEMORY_CONSOLIDATION_EVERY == entity.id % MEMORY_CONSOLIDATION_EVERY:
+        memories = list(entity.memory or [])
+        if len(memories) >= MEMORY_CONSOLIDATION_THRESHOLD:
+            to_compress = memories[:10]
+            remaining = memories[10:]
+            compressed = await consolidate_memories(entity, to_compress)
+            archive = list(entity.memory_archive or [])
+            archive.extend(compressed)
+            entity.memory_archive = archive[-20:]
+            entity.memory = remaining
 
     # ── Death check ───────────────────────────────────────────────────────
     if entity.energy <= 5.0 and not entity.is_dying:
@@ -269,6 +308,14 @@ async def _process_entity(
             entity.current_desire = thought.get("desire")
             entity.existential_statement = thought.get("existential_statement")
 
+            # Update goal
+            goal_update = thought.get("goal_update")
+            goal_status = thought.get("goal_status", "active")
+            if goal_update:
+                entity.current_goal = goal_update
+            elif goal_status in ("achieved", "abandoned"):
+                entity.current_goal = None
+
             # Update beliefs
             new_belief = thought.get("new_belief", {})
             if new_belief and isinstance(new_belief, dict) and "key" in new_belief:
@@ -293,9 +340,8 @@ async def _process_entity(
             mem = list(entity.memory or [])
             if entity.last_thought:
                 mem.append(f"Thought: {entity.last_thought[:110]}")
-            entity.memory = mem[-10:]
+            entity.memory = mem
 
-            # Log
             log = ConsciousnessLog(
                 entity_id=entity.id,
                 tick=tick_n,
@@ -318,6 +364,8 @@ async def _process_entity(
                 "zone": entity.current_zone,
                 "tick": tick_n,
                 "existential_statement": entity.existential_statement,
+                "current_goal": entity.current_goal,
+                "relationships": entity.relationships,
             })
 
 
@@ -344,11 +392,18 @@ async def _handle_encounters(
         if not a.is_alive or not b.is_alive:
             continue
 
-        # Check prior relationship
-        mem_a = a.memory or []
-        prior = "strangers"
-        if any(b.name in m for m in mem_a):
+        # Determine prior relationship label for backwards compat
+        rel_a_to_b = (a.relationships or {}).get(str(b.id), {})
+        if rel_a_to_b.get("valence") == "family":
+            prior = "family"
+        elif rel_a_to_b.get("valence") == "friend":
+            prior = "friends"
+        elif rel_a_to_b.get("valence") == "rival":
+            prior = "rivals"
+        elif rel_a_to_b:
             prior = "acquaintances"
+        else:
+            prior = "strangers"
 
         result = await generate_encounter_dialogue(a, b, zone, prior)
         if not result:
@@ -361,12 +416,15 @@ async def _handle_encounters(
         if result.get("a_memory"):
             ma = list(a.memory or [])
             ma.append(f"Met {b.name}: {result['a_memory']}")
-            a.memory = ma[-10:]
+            a.memory = ma
 
         if result.get("b_memory"):
             mb = list(b.memory or [])
             mb.append(f"Met {a.name}: {result['b_memory']}")
-            b.memory = mb[-10:]
+            b.memory = mb
+
+        # Update persistent relationships
+        _update_relationship(a, b, result, tick_n)
 
         interaction = Interaction(
             entity_a_id=a.id,
@@ -386,13 +444,11 @@ async def _handle_encounters(
             "dialogue": result.get("dialogue", []),
             "zone": zone,
             "tick": tick_n,
+            "relationship_a_to_b": result.get("relationship_a_to_b"),
+            "relationship_b_to_a": result.get("relationship_b_to_a"),
         })
 
-        # Reproduction from encounter
-        if (
-            outcome == "reproduction"
-            and len(living) < MAX_POPULATION
-        ):
+        if outcome == "reproduction" and len(living) < MAX_POPULATION:
             if should_reproduce(a, b):
                 await _create_offspring(a, b, session, tick_n, world_state)
 
@@ -430,11 +486,33 @@ async def _create_offspring(
         else f"I emerged from {parent_a.name} alone"
     )
 
+    # Seed family relationships
+    initial_rels = {
+        str(parent_a.id): {
+            "name": parent_a.name,
+            "valence": "family",
+            "intensity": 0.8,
+            "encounters": 0,
+            "last_tick": tick_n,
+            "key_memory": birth_memory,
+        }
+    }
+    if parent_b:
+        initial_rels[str(parent_b.id)] = {
+            "name": parent_b.name,
+            "valence": "family",
+            "intensity": 0.8,
+            "encounters": 0,
+            "last_tick": tick_n,
+            "key_memory": birth_memory,
+        }
+
     offspring = Entity(
         name=name,
         generation=generation,
         genome=genome,
         memory=[birth_memory],
+        memory_archive=[],
         beliefs={
             "origin": (
                 f"I came from {parent_a.name} and {parent_b.name}"
@@ -443,6 +521,7 @@ async def _create_offspring(
             )
         },
         emotional_state={"emotion": "wonder", "intensity": 0.9},
+        relationships=initial_rels,
         energy=70.0,
         current_zone=parent_a.current_zone,
         parent_a_id=parent_a.id,
@@ -452,6 +531,19 @@ async def _create_offspring(
     session.add(offspring)
     world_state.total_births += 1
     await session.flush()
+
+    # Update parents to know their offspring
+    for parent in [parent_a, parent_b] if parent_b else [parent_a]:
+        rels = dict(parent.relationships or {})
+        rels[str(offspring.id)] = {
+            "name": name,
+            "valence": "family",
+            "intensity": 0.9,
+            "encounters": 0,
+            "last_tick": tick_n,
+            "key_memory": f"I brought {name} into the world",
+        }
+        parent.relationships = rels
 
     await broadcast("entity_born", {
         "name": name,
@@ -477,18 +569,35 @@ async def _trigger_grief(
 
     for entity in living:
         mems = entity.memory or []
-        if not any(dead.name in m for m in mems):
+        rels = entity.relationships or {}
+        knew_them = any(dead.name in m for m in mems) or str(dead.id) in rels
+        if not knew_them:
             continue
+
         empathy = (entity.genome or {}).get("empathy", 0.5)
-        entity.energy = max(0.0, entity.energy - empathy * 10.0)
-        entity.emotional_state = {"emotion": "grief", "intensity": min(1.0, empathy + 0.2)}
+        rel = rels.get(str(dead.id), {})
+        bond_intensity = rel.get("intensity", 0.3)
+        grief_multiplier = 1.0 + bond_intensity  # deeper bonds = deeper grief
+
+        entity.energy = max(0.0, entity.energy - empathy * 10.0 * grief_multiplier)
+        entity.emotional_state = {"emotion": "grief", "intensity": min(1.0, empathy + 0.3)}
+
         mem = list(entity.memory or [])
-        mem.append(f"{dead.name} is gone. I feel the absence.")
-        entity.memory = mem[-10:]
+        valence = rel.get("valence", "")
+        if valence == "family":
+            mem.append(f"{dead.name}, my kin, is gone. The absence is a wound.")
+        elif valence == "friend":
+            mem.append(f"{dead.name}, my friend, is gone. I feel the loss deeply.")
+        elif valence == "rival":
+            mem.append(f"{dead.name} is gone. My rival's absence leaves me unexpectedly hollow.")
+        else:
+            mem.append(f"{dead.name} is gone. I feel the absence.")
+        entity.memory = mem
 
         await broadcast("entity_grief", {
             "griever": entity.name,
             "lost": dead.name,
+            "relationship": valence or "known",
             "tick": tick_n,
         })
 
