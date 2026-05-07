@@ -1,8 +1,8 @@
 /**
- * World v16 — Elder entity golden rings, zone dominance crown.
- * Ancient entities (age ≥ 50 ticks or generation ≥ 5) are distinguished
- * by a pulsing golden dashed ring. The most populated zone earns a crown
- * symbol in its label, shifting as the world's balance changes.
+ * World v17 — Periodic meteor shower, world health border aura.
+ * Every 60-120 seconds a burst of shooting stars crosses the Void sky.
+ * The canvas border glows green, amber, or red — an at-a-glance indicator
+ * of whether the world is thriving, stressed, or in crisis.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -388,6 +388,27 @@ export default function WorldScreen() {
       t = setTimeout(fire, 20000 + Math.random() * 25000)
     }
     t = setTimeout(fire, 9000)
+    return () => clearTimeout(t)
+  }, [])
+
+  // ── Periodic meteor shower ────────────────────────────────────────────────
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout>
+    const shower = () => {
+      for (let i = 0; i < 10; i++) {
+        setTimeout(() => {
+          const x    = 355 + Math.random() * 140
+          const y    = 8   + Math.random() * 160
+          const anim = new Animated.Value(0)
+          const sid  = nextStarId.current++
+          setShootingStars(prev => [...prev.slice(-14), { id: sid, x, y, anim }])
+          Animated.timing(anim, { toValue: 1, duration: 480 + Math.random() * 160, useNativeDriver: true })
+            .start(() => setShootingStars(prev => prev.filter(s => s.id !== sid)))
+        }, i * 260)
+      }
+      t = setTimeout(shower, 60000 + Math.random() * 60000)
+    }
+    t = setTimeout(shower, 35000)
     return () => clearTimeout(t)
   }, [])
 
@@ -953,6 +974,12 @@ export default function WorldScreen() {
       return (zoneCounts[z] ?? 0) > (zoneCounts[best] ?? 0) ? z : best
     }, null)
   }, [entities, zoneCounts])
+
+  const worldHealthColor = useMemo(() => {
+    if (entities.length === 0) return '#475569'
+    const avg = entities.reduce((s, e) => s + (e.energy ?? 50), 0) / entities.length
+    return avg > 60 ? '#22c55e' : avg > 35 ? '#f59e0b' : '#ef4444'
+  }, [entities])
 
   const prophecy = useMemo(() => {
     if (entities.length === 0) return 'El mundo duerme...'
@@ -1575,6 +1602,12 @@ export default function WorldScreen() {
           )}
         </Animated.View>
 
+        {/* ── World health aura border ── */}
+        <View pointerEvents="none" style={[styles.healthAura, {
+          borderColor: worldHealthColor,
+          shadowColor: worldHealthColor,
+        }]} />
+
         {/* ── Zone minimap (outside canvas transform) ── */}
         <View style={styles.minimap}>
           {ZONES.map(zone => {
@@ -1735,6 +1768,11 @@ const styles = StyleSheet.create({
 
   canvasWrap: { flex: 1, overflow: 'hidden' },
   canvas:     { width: W, height: H, position: 'absolute', top: 0, left: 0 },
+  healthAura: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    borderWidth: 2.5, opacity: 0.45,
+    shadowOpacity: 0.9, shadowRadius: 16, shadowOffset: { width: 0, height: 0 },
+  },
 
   zoneLabel: { position: 'absolute' },
   zoneName: {
