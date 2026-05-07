@@ -1,9 +1,10 @@
 /**
- * World v9 — Void vortex, dream ZZZ, Archive shimmer.
- * Rotating oval rings swirl at the Void portal; low-energy entities float
- * sleep bubbles; the Archive breathes with warm amber light.
+ * World v10 — World prophecy header text, social web ambient lines.
+ * A live prophecy line in the header reads the simulation state and names
+ * what the world is feeling. Faint relationship web lines connect entities
+ * that share bonds — friends green, family violet, rivals red.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Animated,
   PanResponder,
@@ -200,6 +201,7 @@ interface RelLine      { id: number; x1: number; y1: number; x2: number; y2: num
 interface Pollen       { id: number; x: number; baseY: number; anim: Animated.Value }
 interface ShootingStar { id: number; x: number; y: number; anim: Animated.Value }
 interface SleepMark    { id: number; x: number; y: number; anim: Animated.Value }
+interface SocialLine   { key: string; x1: number; y1: number; x2: number; y2: number; color: string }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function WorldScreen() {
@@ -387,6 +389,45 @@ export default function WorldScreen() {
         .start(() => setSleepMarks(prev => prev.filter(s => s.id !== sid)))
     }
     const id = setInterval(check, 8500)
+    return () => clearInterval(id)
+  }, [])
+
+  // ── Social web ambient lines ──────────────────────────────────────────────
+  const [socialLines, setSocialLines] = useState<SocialLine[]>([])
+  useEffect(() => {
+    const compute = () => {
+      const lines: SocialLine[] = []
+      const seen = new Set<string>()
+      for (const entity of entitiesRef.current) {
+        if (lines.length >= 15) break
+        const rels = (entity as any).relationships ?? {}
+        for (const [targetName, rel] of Object.entries(rels)) {
+          if (lines.length >= 15) break
+          const target = entitiesRef.current.find(e => e.name === targetName)
+          if (!target) continue
+          const pairKey = [entity.id, target.id].sort((a, b) => a - b).join('-')
+          if (seen.has(pairKey)) continue
+          seen.add(pairKey)
+          const posA = posRef.current[entity.id]
+          const posB = posRef.current[target.id]
+          if (!posA || !posB) continue
+          const x1 = (posA.x as any)._value as number
+          const y1 = (posA.y as any)._value as number
+          const x2 = (posB.x as any)._value as number
+          const y2 = (posB.y as any)._value as number
+          const valence = (rel as any).valence ?? 'neutral'
+          const color = valence === 'friend'
+            ? 'rgba(52,211,153,0.18)'
+            : valence === 'family'
+            ? 'rgba(167,139,250,0.18)'
+            : 'rgba(248,113,113,0.18)'
+          lines.push({ key: pairKey, x1, y1, x2, y2, color })
+        }
+      }
+      setSocialLines(lines)
+    }
+    compute()
+    const id = setInterval(compute, 3000)
     return () => clearInterval(id)
   }, [])
 
@@ -755,6 +796,21 @@ export default function WorldScreen() {
     return acc
   }, {} as Record<string, number>)
 
+  const prophecy = useMemo(() => {
+    if (entities.length === 0) return 'El mundo duerme...'
+    if (entities.length < 3) return 'El mundo agoniza...'
+    const avgEnergy = entities.reduce((s, e) => s + (e.energy ?? 50), 0) / entities.length
+    const maxGen = Math.max(...entities.map(e => e.generation ?? 0))
+    const stormPct  = entities.filter(e => e.current_zone === 'Storm').length / entities.length
+    const gardenPct = entities.filter(e => e.current_zone === 'Garden').length / entities.length
+    if (maxGen >= 5) return `Una estirpe de ${maxGen} generaciones`
+    if (stormPct > 0.5) return 'La Tormenta reclama almas'
+    if (avgEnergy < 28) return 'El hambre acecha el mundo'
+    if (gardenPct > 0.6) return 'El Jardín florece'
+    if (entities.length >= 10) return 'La vida prospera'
+    return 'El mundo respira'
+  }, [entities])
+
   return (
     <View style={styles.container}>
 
@@ -768,6 +824,7 @@ export default function WorldScreen() {
               <Sparkline data={popHistory} color="#22d3ee" w={52} h={16} />
             </View>
           </View>
+          <Text style={styles.prophecyText}>✦ {prophecy}</Text>
         </View>
         <View style={styles.headerRight}>
           {isThinking ? (
@@ -1076,6 +1133,24 @@ export default function WorldScreen() {
             )
           })}
 
+          {/* Social web — ambient relationship lines */}
+          {socialLines.map(line => {
+            const dx  = line.x2 - line.x1
+            const dy  = line.y2 - line.y1
+            const len = Math.sqrt(dx * dx + dy * dy)
+            if (len < 4) return null
+            const ang = Math.atan2(dy, dx) * (180 / Math.PI)
+            const mx  = (line.x1 + line.x2) / 2
+            const my  = (line.y1 + line.y2) / 2
+            return (
+              <View key={line.key} style={[styles.socialLine, {
+                left: mx - len / 2, top: my - 1, width: len,
+                backgroundColor: line.color,
+                transform: [{ rotate: `${ang}deg` }],
+              }]} />
+            )
+          })}
+
           {/* Entities */}
           {entities.map(entity => {
             const pos = posRef.current[entity.id]
@@ -1342,6 +1417,7 @@ const styles = StyleSheet.create({
   headerSubRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 1 },
   headerSub:    { fontSize: 11, color: COLORS.textMuted },
   sparklineWrap:{ opacity: 0.9 },
+  prophecyText: { fontSize: 10, color: '#94a3b8', fontStyle: 'italic', marginTop: 3, opacity: 0.8 },
   headerRight:  { flexDirection: 'row', alignItems: 'center', gap: 8 },
   dotLive:      { width: 8, height: 8, borderRadius: 4, backgroundColor: '#22c55e' },
   thinkingBadge: { backgroundColor: '#0e7490', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
@@ -1405,6 +1481,7 @@ const styles = StyleSheet.create({
     position: 'absolute', height: 3, borderRadius: 1.5,
     shadowOpacity: 0.7, shadowRadius: 5, shadowOffset: { width: 0, height: 0 },
   },
+  socialLine: { position: 'absolute', height: 2, borderRadius: 1 },
   griefMark:  { position: 'absolute' },
   griefEmoji: { fontSize: 14 },
   sleepMark:  { position: 'absolute' },
