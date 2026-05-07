@@ -11,7 +11,7 @@ import {
 import {
   ZONES, ZONE_NAMES, WORLD_EVENTS, shouldFireWorldEvent, getWeightedEvent,
 } from './world'
-import { think, generateDyingMessage, generateEncounter } from './brain'
+import { think, generateDyingMessage, generateEncounter, consolidateMemories } from './brain'
 import { persistState, loadPersistedState } from './persistence'
 import {
   openDB,
@@ -22,7 +22,7 @@ import {
   ZONE_STRUCTURE_TYPES, STRUCTURE_ENERGY_AURA,
 } from './world'
 import type {
-  Entity, WorldState, LiveEvent, ConsciousnessLog, FinalMessage, Structure,
+  Entity, WorldState, LiveEvent, ConsciousnessLog, FinalMessage, Structure, RelationshipEntry,
 } from './types'
 
 export interface SimState {
@@ -34,8 +34,8 @@ export interface SimState {
 }
 
 export interface CatchUpSummary {
-  msAway:         number   // real milliseconds the app was closed
-  ticksSimulated: number   // ticks we ran silently
+  msAway:         number
+  ticksSimulated: number
   births:         number
   deaths:         number
 }
@@ -45,9 +45,9 @@ type Listener = (state: SimState) => void
 const TICK_INTERVAL_MS    = 8_000
 const MAX_POPULATION      = 20
 const THINK_EVERY_N_TICKS = 3
-// Max ticks to catch up silently (≈ 2.2 real hours); beyond that time still passes
-// but we only simulate this many ticks to avoid blocking the UI
 const MAX_CATCHUP_TICKS   = 1000
+const MEMORY_CONSOLIDATION_THRESHOLD = 18   // compress when memory exceeds this
+const MEMORY_CONSOLIDATION_EVERY     = 15   // check every N ticks per entity
 
 let _idCounter = 1
 let _logIdCounter = 1
@@ -85,7 +85,6 @@ export class Simulation {
   getCatchUpSummary(): CatchUpSummary | null { return this._catchUpSummary }
   clearCatchUpSummary() { this._catchUpSummary = null }
 
-  /** Persist current state + timestamp to AsyncStorage. Call on app background. */
   async save(): Promise<void> {
     await persistState(this.state)
   }
@@ -94,19 +93,15 @@ export class Simulation {
     if (this.running) return
     this.running = true
 
-    // Open SQLite DB (non-blocking — don't fail if it errors)
     openDB().catch(() => {})
 
-    // Try to restore the world from the last session
     const saved = await loadPersistedState()
     if (saved) {
-      // Restore IDs so new entities don't collide with old ones
       const maxId = Math.max(0, ...saved.state.entities.map(e => e.id))
       if (maxId >= _idCounter) _idCounter = maxId + 1
 
       this._setState(saved.state)
 
-      // Calculate and simulate missed time
       const msAway       = Date.now() - saved.savedAt
       const ticksMissed  = Math.floor(msAway / TICK_INTERVAL_MS)
       const ticksToRun   = Math.min(ticksMissed, MAX_CATCHUP_TICKS)
@@ -116,7 +111,6 @@ export class Simulation {
         this._catchUpSummary = { msAway, ticksSimulated: ticksToRun, births, deaths }
       }
 
-      // Reseed if everyone died while away
       if (this.state.entities.filter(e => e.is_alive).length < 2) this._seed()
       this._notify()
     } else {
@@ -154,18 +148,58 @@ export class Simulation {
       is_alive:              true,
       last_thought:          null,
       current_desire:        null,
+      current_goal:          null,
       existential_statement: null,
       parent_a_id:           null,
       parent_b_id:           null,
       born_at:               new Date().toISOString(),
       memory:                [],
+      memory_archive:        [],
       beliefs:               { existence: 'I am. That is the first and most certain thing.' },
+      relationships:         {},
       final_message:         null,
       died_at_tick:          null,
     }))
     this._setState({ entities })
     this._notify()
     for (const e of entities) dbInsertEntity(e, 0).catch(() => {})
+  }
+
+  // ── Relationship helpers ──────────────────────────────────────────────────
+
+  private _updateRelationship(
+    entityA: Entity,
+    entityB: Entity,
+    result: {
+      relationship_a_to_b: string
+      relationship_b_to_a: string
+      relationship_intensity_change: number
+      a_memory: string
+      b_memory: string
+    },
+    tick: number,
+  ): void {
+    const intensityChange = result.relationship_intensity_change ?? 0
+
+    for (const [entity, other, valenceKey, memKey] of [
+      [entityA, entityB, 'relationship_a_to_b', 'a_memory'],
+      [entityB, entityA, 'relationship_b_to_a', 'b_memory'],
+    ] as [Entity, Entity, string, string][]) {
+      const rels = { ...(entity.relationships ?? {}) }
+      const key  = String(other.id)
+      const existing = rels[key] ?? { encounters: 0, intensity: 0.2, valence: 'neutral', name: other.name, last_tick: tick, key_memory: '' }
+      const newIntensity = Math.max(0, Math.min(1, (existing.intensity ?? 0.2) + intensityChange))
+
+      rels[key] = {
+        name:       other.name,
+        valence:    ((result as Record<string, string>)[valenceKey] ?? existing.valence ?? 'neutral') as RelationshipEntry['valence'],
+        intensity:  Math.round(newIntensity * 1000) / 1000,
+        encounters: (existing.encounters ?? 0) + 1,
+        last_tick:  tick,
+        key_memory: ((result as Record<string, string>)[memKey] ?? '').slice(0, 120),
+      }
+      entity.relationships = rels
+    }
   }
 
   // ── Silent catch-up (no Claude, pure logic) ───────────────────────────────
@@ -183,14 +217,10 @@ export class Simulation {
       const next: Entity[] = []
 
       for (const e of alive) {
-        // Zone energy effect
         const zoneData = ZONES[e.current_zone] ?? ZONES.Garden
         e.energy = Math.max(0, Math.min(100, e.energy + zoneData.energy_effect))
-
-        // Base drain
         e.energy = Math.max(0, e.energy - calculateEnergyDrain(e))
 
-        // Elder extra drain
         if (e.age_ticks > ELDER_AGE_TICKS) {
           const factor = (e.age_ticks - ELDER_AGE_TICKS) / (MAX_AGE_TICKS - ELDER_AGE_TICKS)
           e.energy = Math.max(0, e.energy - factor * 2)
@@ -198,7 +228,6 @@ export class Simulation {
 
         e.age_ticks += 1
 
-        // Death
         if (e.age_ticks >= MAX_AGE_TICKS || e.energy <= 5) {
           dead.push({
             ...e, is_alive: false, died_at_tick: tick,
@@ -217,22 +246,31 @@ export class Simulation {
           continue
         }
 
-        // Asexual cloning
         if (shouldClone(e) && alive.length + next.length < MAX_POPULATION) {
           e.energy -= 30
-          next.push({
+          const child: Entity = {
             id: nextId(), name: getRandomName(),
             generation: e.generation + 1, age_ticks: 0, energy: 70,
             genome: createOffspringGenome(e.genome),
             emotional_state: { emotion: 'wonder', intensity: 0.9 },
             current_zone: e.current_zone, is_alive: true,
-            last_thought: null, current_desire: null, existential_statement: null,
+            last_thought: null, current_desire: null, current_goal: null, existential_statement: null,
             parent_a_id: e.id, parent_b_id: null,
             born_at: new Date(Date.now() - (ticksToRun - t) * TICK_INTERVAL_MS).toISOString(),
             memory: [`Nací de ${e.name} mientras el mundo dormía.`],
+            memory_archive: [],
             beliefs: { origin: `Vengo de ${e.name}.` },
+            relationships: {
+              [String(e.id)]: { name: e.name, valence: 'family', intensity: 0.8, encounters: 0, last_tick: tick, key_memory: `Nací de ${e.name}` },
+            },
             final_message: null, died_at_tick: null,
-          })
+          }
+          // Parent knows offspring
+          const parentRels = { ...(e.relationships ?? {}) }
+          parentRels[String(child.id)] = { name: child.name, valence: 'family', intensity: 0.9, encounters: 0, last_tick: tick, key_memory: `Traje ${child.name} al mundo` }
+          e.relationships = parentRels
+
+          next.push(child)
           ws.total_births += 1
           births++
         }
@@ -240,29 +278,35 @@ export class Simulation {
         next.push(e)
       }
 
-      // Sexual reproduction (simplified, once per tick at 8% chance)
+      // Sexual reproduction
       if (next.length >= 2 && next.length < MAX_POPULATION && Math.random() < 0.08) {
         const pool = next.filter(e => e.energy > 65)
         if (pool.length >= 2) {
           const a = pool[Math.floor(Math.random() * pool.length)]
           const b = pool.filter(e => e.id !== a.id)[0]
           if (b && shouldReproduce(a, b)) {
-            next.push({
+            const child: Entity = {
               id: nextId(), name: getRandomName(),
               generation: Math.max(a.generation, b.generation) + 1,
               age_ticks: 0, energy: 70,
               genome: createOffspringGenome(a.genome, b.genome),
               emotional_state: { emotion: 'wonder', intensity: 0.9 },
               current_zone: a.current_zone, is_alive: true,
-              last_thought: null, current_desire: null, existential_statement: null,
+              last_thought: null, current_desire: null, current_goal: null, existential_statement: null,
               parent_a_id: a.id, parent_b_id: b.id,
               born_at: new Date(Date.now() - (ticksToRun - t) * TICK_INTERVAL_MS).toISOString(),
               memory: [`Nací de ${a.name} y ${b.name} mientras el mundo dormía.`],
+              memory_archive: [],
               beliefs: { origin: `Vengo de ${a.name} y ${b.name}.` },
+              relationships: {
+                [String(a.id)]: { name: a.name, valence: 'family', intensity: 0.8, encounters: 0, last_tick: tick, key_memory: `Nací de ${a.name}` },
+                [String(b.id)]: { name: b.name, valence: 'family', intensity: 0.8, encounters: 0, last_tick: tick, key_memory: `Nací de ${b.name}` },
+              },
               final_message: null, died_at_tick: null,
-            })
+            }
             ws.total_births += 1
             births++
+            next.push(child)
           }
         }
       }
@@ -274,7 +318,7 @@ export class Simulation {
     this._setState({
       entities:   [...alive, ...dead],
       worldState: ws,
-      liveEvents: [],      // clear old events; a fresh start
+      liveEvents: [],
       logs:       this.state.logs,
     })
 
@@ -320,7 +364,7 @@ export class Simulation {
       dbInsertWorldEvent({ ...wev, id: 0 }).catch(() => {})
     }
 
-    // ── Apply structure energy auras to entities ────────────────────────────
+    // ── Apply structure energy auras ────────────────────────────────────────
     let structures = [...(this.state.structures ?? [])]
     for (const entity of entities) {
       const aura = structures
@@ -328,7 +372,6 @@ export class Simulation {
         .reduce((sum, s) => sum + s.energy_aura, 0)
       if (aura > 0) entity.energy = Math.min(100, entity.energy + aura)
     }
-    // Remove demolished structures
     structures = structures.filter(s => s.hp > 0)
 
     // ── Process each entity in parallel ────────────────────────────────────
@@ -338,19 +381,30 @@ export class Simulation {
     const updated = results.map(r => r.entity)
     const clones  = results.flatMap(r => r.child ? [r.child] : [])
 
-    // Partition alive / dead (clones start alive)
     const alive = [...updated.filter(e => e.is_alive), ...clones]
     const dead  = updated.filter(e => !e.is_alive)
 
-    // Grief
+    // ── Grief (relationship-aware) ──────────────────────────────────────────
     for (const d of dead) {
       for (const a of alive) {
-        if (a.memory.some(m => m.includes(d.name))) {
-          a.energy   = Math.max(0, a.energy - a.genome.empathy * 10)
-          a.emotional_state = { emotion: 'grief', intensity: Math.min(1, a.genome.empathy + 0.2) }
-          a.memory   = [...a.memory, `${d.name} is gone. I feel the absence.`].slice(-10)
-          this._pushEvent({ type: 'entity_grief', griever: a.name, lost: d.name, tick })
-        }
+        const rel = (a.relationships ?? {})[String(d.id)]
+        const knewThem = rel || a.memory.some(m => m.includes(d.name))
+        if (!knewThem) continue
+
+        const bondIntensity = rel?.intensity ?? 0.3
+        const griefMultiplier = 1.0 + bondIntensity
+        a.energy = Math.max(0, a.energy - a.genome.empathy * 10 * griefMultiplier)
+        a.emotional_state = { emotion: 'grief', intensity: Math.min(1, a.genome.empathy + 0.3) }
+
+        const valence = rel?.valence
+        let griefMemory: string
+        if (valence === 'family')  griefMemory = `${d.name}, mi kin, se ha ido. La ausencia es una herida.`
+        else if (valence === 'friend') griefMemory = `${d.name}, mi amigo, se ha ido. Siento la pérdida profundamente.`
+        else if (valence === 'rival')  griefMemory = `${d.name} se ha ido. La ausencia de mi rival me deja inesperadamente vacío.`
+        else                           griefMemory = `${d.name} se ha ido. Siento su ausencia.`
+
+        a.memory = [...a.memory, griefMemory].slice(-20)
+        this._pushEvent({ type: 'entity_grief', griever: a.name, lost: d.name, relationship: valence ?? 'known', tick })
       }
     }
 
@@ -368,7 +422,7 @@ export class Simulation {
     // ── Auto-reseed ─────────────────────────────────────────────────────────
     if (alive.length < 2) this._seed()
 
-    // ── Merge structures (new ones from this tick + existing) ───────────────
+    // ── Merge structures ────────────────────────────────────────────────────
     for (const r of results) {
       if (r.builtStructure) structures.push(r.builtStructure)
       if (r.damagedStructureId != null) {
@@ -376,10 +430,8 @@ export class Simulation {
         if (s) s.hp = Math.max(0, s.hp - 30)
       }
     }
-    // Re-prune any newly demolished structures
     const finalStructures = structures.filter(s => s.hp > 0)
 
-    // ── Merge and commit ────────────────────────────────────────────────────
     const allEntities = [
       ...alive,
       ...dead,
@@ -389,7 +441,6 @@ export class Simulation {
     this._setState({ entities: allEntities, worldState: ws, structures: finalStructures })
     this._pushEvent({ type: 'tick', tick, population: alive.length })
     this._notify()
-    // Autosave every tick so the world persists between sessions
     persistState(this.state).catch(() => {})
   }
 
@@ -404,21 +455,17 @@ export class Simulation {
   ): Promise<{ entity: Entity; child: Entity | null; builtStructure: Structure | null; damagedStructureId: number | null }> {
     const zoneData = ZONES[e.current_zone] ?? ZONES.Garden
 
-    // Zone effect
     e.energy += zoneData.energy_effect
 
-    // World event effect
     if (worldEvent && (worldEvent.zone === null || worldEvent.zone === e.current_zone)) {
       e.energy += worldEvent.effect.energy
       e.emotional_state = { emotion: worldEvent.effect.emotion, intensity: 0.75 }
-      e.memory = [...e.memory, `A ${worldEvent.type} came — ${worldEvent.description.slice(0, 90)}`].slice(-10)
+      e.memory = [...e.memory, `A ${worldEvent.type} came — ${worldEvent.description.slice(0, 90)}`].slice(-20)
     }
 
-    // Energy drain (base)
     const drain = calculateEnergyDrain(e)
     e.energy = Math.max(0, Math.min(100, e.energy - drain))
 
-    // Old-age extra drain: after ELDER_AGE_TICKS, progressive deterioration
     if (e.age_ticks > ELDER_AGE_TICKS) {
       const ageFactor = (e.age_ticks - ELDER_AGE_TICKS) / (MAX_AGE_TICKS - ELDER_AGE_TICKS)
       e.energy = Math.max(0, e.energy - ageFactor * 2)
@@ -426,7 +473,20 @@ export class Simulation {
 
     e.age_ticks += 1
 
-    // Old-age death
+    // ── Memory consolidation ───────────────────────────────────────────────
+    if (tick % MEMORY_CONSOLIDATION_EVERY === e.id % MEMORY_CONSOLIDATION_EVERY) {
+      const mems = e.memory ?? []
+      if (mems.length >= MEMORY_CONSOLIDATION_THRESHOLD) {
+        const toCompress = mems.slice(0, 10)
+        const remaining  = mems.slice(10)
+        const compressed = await consolidateMemories(e, toCompress)
+        const archive = [...(e.memory_archive ?? []), ...compressed].slice(-20)
+        e.memory_archive = archive
+        e.memory = remaining
+      }
+    }
+
+    // ── Old-age death ─────────────────────────────────────────────────────
     if (e.age_ticks >= MAX_AGE_TICKS) {
       const msg = await generateDyingMessage(e)
       e.is_alive      = false
@@ -451,7 +511,7 @@ export class Simulation {
       return { entity: e, child: null, builtStructure: null, damagedStructureId: null }
     }
 
-    // Energy death
+    // ── Energy death ──────────────────────────────────────────────────────
     if (e.energy <= 5) {
       const msg = await generateDyingMessage(e)
       e.is_alive      = false
@@ -486,7 +546,7 @@ export class Simulation {
       return { entity: e, child: null, builtStructure: null, damagedStructureId: null }
     }
 
-    // Think — smarter entities think more often (every 2 ticks vs 3)
+    // ── Think ─────────────────────────────────────────────────────────────
     const intel      = computeIntelligence(e)
     const thinkEvery = intel > 60 ? 2 : THINK_EVERY_N_TICKS
 
@@ -504,6 +564,13 @@ export class Simulation {
         e.current_desire        = t.desire
         e.existential_statement = t.existential_statement
 
+        // Update goal
+        if (t.goal_update) {
+          e.current_goal = t.goal_update
+        } else if (t.goal_status === 'achieved' || t.goal_status === 'abandoned') {
+          e.current_goal = null
+        }
+
         // New belief
         if (t.new_belief?.key) {
           const beliefs = { ...e.beliefs, [t.new_belief.key]: t.new_belief.value }
@@ -517,8 +584,8 @@ export class Simulation {
           case 'explore':
             if (t.action_target && ZONES[t.action_target]) {
               e.current_zone = t.action_target
-              e.energy = Math.max(0, e.energy - 3)   // travel costs energy
-              e.memory = [...e.memory, `Exploré hasta ${t.action_target}`].slice(-10)
+              e.energy = Math.max(0, e.energy - 3)
+              e.memory = [...e.memory, `Exploré hasta ${t.action_target}`].slice(-20)
             }
             break
 
@@ -528,7 +595,7 @@ export class Simulation {
 
           case 'seek_food':
             e.energy = Math.min(100, e.energy + 12)
-            e.memory = [...e.memory, 'Encontré alimento y me recuperé.'].slice(-10)
+            e.memory = [...e.memory, 'Encontré alimento y me recuperé.'].slice(-20)
             break
 
           case 'build': {
@@ -546,7 +613,7 @@ export class Simulation {
                 energy_aura:  aura,
                 created_tick: tick,
               }
-              e.memory = [...e.memory, `Construí ${structType} en ${e.current_zone}.`].slice(-10)
+              e.memory = [...e.memory, `Construí ${structType} en ${e.current_zone}.`].slice(-20)
               this._pushEvent({
                 type: 'structure_built', builder: e.name,
                 structure: structType, zone: e.current_zone, aura, tick,
@@ -556,7 +623,6 @@ export class Simulation {
           }
 
           case 'destroy': {
-            // Target the weakest foreign structure first, or pick by action_target type
             const targets = nearbyStructures.filter(s => s.builder_id !== e.id)
             const victim = t.action_target
               ? (targets.find(s => s.type === t.action_target) ?? targets[0])
@@ -569,7 +635,7 @@ export class Simulation {
                 demolished
                   ? `Destruí completamente ${victim.type} de ${victim.builder_name}.`
                   : `Dañé ${victim.type} de ${victim.builder_name} (${victim.hp - 30} HP restante).`
-              ].slice(-10)
+              ].slice(-20)
               this._pushEvent({
                 type: 'structure_damaged', attacker: e.name,
                 structure: victim.type, builder: victim.builder_name,
@@ -584,17 +650,16 @@ export class Simulation {
             if (canClone) {
               e.energy -= 35
               child = this._createOffspring(e, null, tick, ws)
-              e.memory = [...e.memory, `Me cloné. ${child.name} nació de mí.`].slice(-10)
+              e.memory = [...e.memory, `Me cloné. ${child.name} nació de mí.`].slice(-20)
             }
             break
           }
 
-          // Emotional / social actions — no special cost
           default:
             break
         }
 
-        e.memory = [...e.memory, `Pensé: ${e.last_thought?.slice(0, 100)}`].slice(-10)
+        e.memory = [...e.memory, `Pensé: ${e.last_thought?.slice(0, 100)}`].slice(-20)
 
         const tLog: ConsciousnessLog = {
           id:                nextLogId(),
@@ -619,6 +684,8 @@ export class Simulation {
           action:                t.action,
           zone:                  e.current_zone,
           existential_statement: e.existential_statement,
+          current_goal:          e.current_goal,
+          relationships:         e.relationships,
           tick,
         })
       }
@@ -646,15 +713,26 @@ export class Simulation {
       let idxB = idxA
       while (idxB === idxA) idxB = Math.floor(Math.random() * group.length)
       const a = group[idxA], b = group[idxB]
-      const prior = a.memory.some(m => m.includes(b.name)) ? 'acquaintances' : 'strangers'
+
+      // Determine prior relationship label
+      const relAtoB = (a.relationships ?? {})[String(b.id)]
+      let prior: string
+      if (relAtoB?.valence === 'family') prior = 'family'
+      else if (relAtoB?.valence === 'friend') prior = 'friends'
+      else if (relAtoB?.valence === 'rival') prior = 'rivals'
+      else if (relAtoB) prior = 'acquaintances'
+      else prior = 'strangers'
 
       const result = await generateEncounter(a, b, zone, prior)
       if (!result) continue
 
       a.energy = Math.max(0, Math.min(100, a.energy + result.energy_change_a))
       b.energy = Math.max(0, Math.min(100, b.energy + result.energy_change_b))
-      if (result.a_memory) a.memory = [...a.memory, `Met ${b.name}: ${result.a_memory}`].slice(-10)
-      if (result.b_memory) b.memory = [...b.memory, `Met ${a.name}: ${result.b_memory}`].slice(-10)
+      if (result.a_memory) a.memory = [...a.memory, `Met ${b.name}: ${result.a_memory}`].slice(-20)
+      if (result.b_memory) b.memory = [...b.memory, `Met ${a.name}: ${result.b_memory}`].slice(-20)
+
+      // Update persistent relationships
+      this._updateRelationship(a, b, result, tick)
 
       this._pushEvent({
         type:     'encounter',
@@ -664,6 +742,8 @@ export class Simulation {
         dialogue: result.dialogue,
         zone,
         tick,
+        relationship_a_to_b: result.relationship_a_to_b,
+        relationship_b_to_a: result.relationship_b_to_a,
       })
 
       dbInsertEncounter(
@@ -671,7 +751,6 @@ export class Simulation {
         result.outcome, result.dialogue, zone,
       ).catch(() => {})
 
-      // Reproduction
       if (result.outcome === 'reproduction' && alive.length < MAX_POPULATION) {
         if (shouldReproduce(a, b)) {
           const child = this._createOffspring(a, b, tick, ws)
@@ -681,10 +760,44 @@ export class Simulation {
     }
   }
 
+  private _handleReproduction(alive: Entity[], tick: number, ws: WorldState): Promise<void> {
+    return this._handleAsexualReproduction(alive, tick, ws)
+  }
+
+  private async _handleAsexualReproduction(alive: Entity[], tick: number, ws: WorldState): Promise<void> {
+    for (const entity of alive) {
+      if (entity.energy > 80 && tick % 20 === entity.id % 20) {
+        if (Math.random() < 0.08) {
+          const child = this._createOffspring(entity, null, tick, ws)
+          alive.push(child)
+          break
+        }
+      }
+    }
+  }
+
   private _createOffspring(parentA: Entity, parentB: Entity | null, tick: number, ws: WorldState): Entity {
     const genome = createOffspringGenome(parentA.genome, parentB?.genome)
     const name   = getRandomName()
     const gen    = Math.max(parentA.generation, parentB?.generation ?? 0) + 1
+
+    const birthMemory = parentB
+      ? `I was born of ${parentA.name} and ${parentB.name}`
+      : `I emerged from ${parentA.name} alone`
+
+    // Seed family relationships for offspring
+    const initialRels: Record<string, RelationshipEntry> = {
+      [String(parentA.id)]: {
+        name: parentA.name, valence: 'family', intensity: 0.8,
+        encounters: 0, last_tick: tick, key_memory: birthMemory,
+      },
+    }
+    if (parentB) {
+      initialRels[String(parentB.id)] = {
+        name: parentB.name, valence: 'family', intensity: 0.8,
+        encounters: 0, last_tick: tick, key_memory: birthMemory,
+      }
+    }
 
     const child: Entity = {
       id:                    nextId(),
@@ -698,16 +811,29 @@ export class Simulation {
       is_alive:              true,
       last_thought:          null,
       current_desire:        null,
+      current_goal:          null,
       existential_statement: null,
       parent_a_id:           parentA.id,
       parent_b_id:           parentB?.id ?? null,
       born_at:               new Date().toISOString(),
-      memory:                [parentB ? `I was born of ${parentA.name} and ${parentB.name}` : `I emerged from ${parentA.name} alone`],
+      memory:                [birthMemory],
+      memory_archive:        [],
       beliefs:               { origin: parentB ? `I came from ${parentA.name} and ${parentB.name}` : `I came from ${parentA.name}` },
+      relationships:         initialRels,
       final_message:         null,
       died_at_tick:          null,
     }
     ws.total_births += 1
+
+    // Parents know their offspring
+    for (const parent of parentB ? [parentA, parentB] : [parentA]) {
+      const rels = { ...(parent.relationships ?? {}) }
+      rels[String(child.id)] = {
+        name: name, valence: 'family', intensity: 0.9,
+        encounters: 0, last_tick: tick, key_memory: `Traje ${name} al mundo`,
+      }
+      parent.relationships = rels
+    }
 
     this._pushEvent({
       type:       'entity_born',
@@ -784,5 +910,9 @@ export class Simulation {
   }
 }
 
-// Singleton — one simulation for the whole app
+// Singleton
 export const simulation = new Simulation()
+
+function shouldClone(e: Entity): boolean {
+  return e.energy >= 85 && e.age_ticks >= 8 && e.genome.survival_drive > 0.7 && Math.random() < 0.05
+}
