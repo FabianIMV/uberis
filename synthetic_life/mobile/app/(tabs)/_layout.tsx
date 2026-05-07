@@ -7,18 +7,19 @@ export default function TabsLayout() {
     <Tabs
       screenOptions={{
         tabBarStyle: {
-          backgroundColor: COLORS.bgCard,
-          borderTopColor: COLORS.border,
+          backgroundColor: '#020b18ee',
+          borderTopColor: '#0e2040',
           borderTopWidth: 1,
-          height: 58,
-          paddingBottom: 6,
+          height: 60,
+          paddingBottom: 8,
+          paddingTop: 4,
         },
         tabBarActiveTintColor:   '#22d3ee',
-        tabBarInactiveTintColor: COLORS.textMuted,
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '600' },
-        headerStyle:      { backgroundColor: COLORS.bgCard },
+        tabBarInactiveTintColor: '#334155',
+        tabBarLabelStyle: { fontSize: 10, fontWeight: '700', letterSpacing: 0.3 },
+        headerStyle:      { backgroundColor: COLORS.bgCard, shadowColor: 'transparent' },
         headerTintColor:  COLORS.text,
-        headerTitleStyle: { color: COLORS.text, fontWeight: '700' },
+        headerTitleStyle: { color: COLORS.text, fontWeight: '700', fontSize: 15 },
         headerShadowVisible: false,
       }}
     >
@@ -26,35 +27,39 @@ export default function TabsLayout() {
         name="index"
         options={{
           title: 'Mundo',
+          headerShown: false,
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="planet-outline" size={size} color={color} />
+            <Ionicons name="earth-outline" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
         name="entities"
         options={{
-          title: 'Entidades',
+          title: 'Almas',
+          headerTitle: 'Almas vivas',
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="sparkles-outline" size={size} color={color} />
+            <Ionicons name="people-outline" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
         name="feed"
         options={{
-          title: 'Feed',
+          title: 'Crónicas',
+          headerShown: false,
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="pulse-outline" size={size} color={color} />
+            <Ionicons name="book-outline" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
         name="stats"
         options={{
-          title: 'Stats',
+          title: 'Datos',
+          headerTitle: 'Estado del mundo',
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="bar-chart-outline" size={size} color={color} />
+            <Ionicons name="analytics-outline" size={size} color={color} />
           ),
         }}
       />
