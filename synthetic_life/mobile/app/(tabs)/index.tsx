@@ -1,7 +1,7 @@
 /**
- * World v4 — birth sparks, Void star twinkle, Garden fireflies.
- * Every zone now has ambient life: fireflies drift in Garden,
- * stars blink in Void, and births leave trails of light.
+ * World v5 — population sparkline, world-event cinematic overlay, zone minimap.
+ * The header now tracks population history; world events take over the screen;
+ * a minimap shows zone balance at a glance.
  */
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -14,7 +14,7 @@ import {
 } from 'react-native'
 import Svg, {
   Circle, Defs, Ellipse, G, LinearGradient,
-  Path, Polygon, Rect, Stop,
+  Path as SvgPath, Polygon, Rect, Stop,
 } from 'react-native-svg'
 import { useRouter } from 'expo-router'
 import { useSimulation } from '../../context/SimulationContext'
@@ -39,6 +39,7 @@ const REGION: Record<string, { x: number; y: number; w: number; h: number }> = {
 const ZONE_NAME_ES: Record<string, string> = {
   Garden: 'Jardín', Void: 'Vacío', Archive: 'Archivo', Storm: 'Tormenta',
 }
+const ZONES = ['Garden', 'Archive', 'Void', 'Storm'] as const
 
 // ── Build types ───────────────────────────────────────────────────────────────
 type BuildType = 'house' | 'rock' | 'fire' | 'tree'
@@ -64,7 +65,6 @@ const BG_PEAKS: [number, number][] = [
   [462,245],[488,262],[510,250],[525,268],[548,250],[572,265],
   [592,248],[618,262],[640,245],[662,262],[682,248],[700,268],
 ]
-
 const G_TREES: [number, number][] = [
   [8,405],[22,388],[40,408],[58,390],[75,410],
   [92,385],[112,404],[130,390],[148,408],[166,392],
@@ -76,7 +76,6 @@ const G_FLOWERS: { cx:number; cy:number; fill:string }[] = [
   {cx:168,cy:442,fill:'#fbbf24'},
 ]
 const G_RIVER_D = "M 58,0 C 72,80 42,140 65,200 C 88,260 50,320 75,390 C 88,420 100,440 120,455"
-
 const A_COLS: [number, number][] = [
   [185,382],[200,386],[218,382],[238,380],[258,382],[278,386],[298,382],[318,380],[338,382],
 ]
@@ -84,7 +83,6 @@ const A_RUIN_BLOCKS: { x:number; y:number; w:number; h:number }[] = [
   {x:190,y:448,w:55,h:10},{x:260,y:445,w:48,h:12},{x:325,y:450,w:22,h:8},
 ]
 
-// Animated stars — picked from V_STARS but tracked separately as RN Views
 const TWINKLE_STARS: { cx:number; cy:number; r:number; phase:number }[] = [
   { cx:395, cy:18,  r:2.5, phase:0    },
   { cx:450, cy:55,  r:2,   phase:0.33 },
@@ -94,7 +92,6 @@ const TWINKLE_STARS: { cx:number; cy:number; r:number; phase:number }[] = [
   { cx:448, cy:178, r:3,   phase:0.8  },
 ]
 
-// Remaining static Void stars (not animated)
 const V_STARS_STATIC: { cx:number; cy:number; r:number; op:number }[] = [
   {cx:358,cy:15,r:1.5,op:0.8},{cx:375,cy:38,r:1,op:0.65},
   {cx:415,cy:45,r:1.2,op:0.7},{cx:432,cy:25,r:1,op:0.6},
@@ -158,16 +155,34 @@ function formatAway(ms: number): string {
   return m > 0 ? `${h}h ${m}min` : `${h}h`
 }
 
+// ── Sparkline component ────────────────────────────────────────────────────────
+function Sparkline({ data, color, w, h }: { data: number[]; color: string; w: number; h: number }) {
+  if (data.length < 2) return null
+  const max = Math.max(...data)
+  const min = Math.min(...data)
+  const range = max - min || 1
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * (w - 2) + 1
+    const y = h - 2 - ((v - min) / range) * (h - 4)
+    return `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`
+  })
+  return (
+    <Svg width={w} height={h}>
+      <SvgPath d={pts.join(' ')} stroke={color} strokeWidth={1.5} fill="none" opacity={0.75} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  )
+}
+
 const NODE       = 17
 const INIT_SCALE = 0.62
 const INIT_TX    = -120
 const INIT_TY    = -30
 
 // ── Particle types ────────────────────────────────────────────────────────────
-interface Bubble { id: number; x: number; y: number; text: string; color: string; anim: Animated.Value }
-interface Ripple { id: number; x: number; y: number; scaleAnim: Animated.Value; opacityAnim: Animated.Value; color: string }
-interface Spark  { id: number; x: number; y: number; dx: number; dy: number; anim: Animated.Value; color: string }
-interface Firefly{ id: number; x: number; baseY: number; anim: Animated.Value }
+interface Bubble  { id: number; x: number; y: number; text: string; color: string; anim: Animated.Value }
+interface Ripple  { id: number; x: number; y: number; scaleAnim: Animated.Value; opacityAnim: Animated.Value; color: string }
+interface Spark   { id: number; x: number; y: number; dx: number; dy: number; anim: Animated.Value; color: string }
+interface Firefly { id: number; x: number; baseY: number; anim: Animated.Value }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function WorldScreen() {
@@ -175,7 +190,7 @@ export default function WorldScreen() {
           feedEntity, awaySummary, dismissAwaySummary } = useSimulation()
   const router = useRouter()
 
-  // Pan/zoom state
+  // Pan/zoom
   const scale      = useRef(new Animated.Value(INIT_SCALE)).current
   const translateX = useRef(new Animated.Value(INIT_TX)).current
   const translateY = useRef(new Animated.Value(INIT_TY)).current
@@ -186,7 +201,7 @@ export default function WorldScreen() {
   const canvasWrapRef  = useRef<any>(null)
   const wrapPageOffset = useRef({ x: 0, y: 0 })
 
-  // Build mode
+  // Build
   const [buildMode, setBuildModeState] = useState(false)
   const buildModeRef    = useRef(false)
   const [selectedBuild, setSelectedBuild] = useState<BuildType>('house')
@@ -211,6 +226,34 @@ export default function WorldScreen() {
   const entitiesRef = useRef(entities)
   useEffect(() => { entitiesRef.current = entities }, [entities])
 
+  // ── Population sparkline ──────────────────────────────────────────────────
+  const [popHistory, setPopHistory] = useState<number[]>([entities.length])
+  const lastTickHistory = useRef(worldState.current_tick)
+  useEffect(() => {
+    if (worldState.current_tick !== lastTickHistory.current) {
+      lastTickHistory.current = worldState.current_tick
+      setPopHistory(prev => [...prev.slice(-24), entities.length])
+    }
+  }, [worldState.current_tick, entities.length])
+
+  // ── World event overlay ───────────────────────────────────────────────────
+  const [worldEventText, setWorldEventText] = useState<string | null>(null)
+  const overlayAnim   = useRef(new Animated.Value(0)).current
+  const lastWorldEvRef = useRef(-1)
+
+  useEffect(() => {
+    const we = liveEvents.find(ev => ev.type === 'world_event')
+    if (!we || we.id === lastWorldEvRef.current) return
+    lastWorldEvRef.current = we.id
+    const text = String((we as any).description ?? we.type)
+    setWorldEventText(text)
+    Animated.sequence([
+      Animated.timing(overlayAnim, { toValue: 1, duration: 700, useNativeDriver: true }),
+      Animated.delay(3500),
+      Animated.timing(overlayAnim, { toValue: 0, duration: 1000, useNativeDriver: true }),
+    ]).start(() => setWorldEventText(null))
+  }, [liveEvents])
+
   // ── Pulse glow ────────────────────────────────────────────────────────────
   const pulse = useRef(new Animated.Value(0)).current
   useEffect(() => {
@@ -224,18 +267,15 @@ export default function WorldScreen() {
     return () => loop.stop()
   }, [])
 
-  // ── Void star twinkle (3 independent phases) ──────────────────────────────
-  const twinkleAnims = useRef(
-    TWINKLE_STARS.map(s => new Animated.Value(s.phase))
-  ).current
-
+  // ── Star twinkle ──────────────────────────────────────────────────────────
+  const twinkleAnims = useRef(TWINKLE_STARS.map(s => new Animated.Value(s.phase))).current
   useEffect(() => {
     const loops = TWINKLE_STARS.map((s, i) => {
       const anim = twinkleAnims[i]
       const dur  = 1200 + i * 380
       const loop = Animated.loop(
         Animated.sequence([
-          Animated.timing(anim, { toValue: 1, duration: dur, useNativeDriver: true }),
+          Animated.timing(anim, { toValue: 1,    duration: dur,       useNativeDriver: true }),
           Animated.timing(anim, { toValue: 0.15, duration: dur * 0.7, useNativeDriver: true }),
         ])
       )
@@ -245,28 +285,21 @@ export default function WorldScreen() {
     return () => loops.forEach(l => l.stop())
   }, [])
 
-  // ── Garden fireflies ──────────────────────────────────────────────────────
+  // ── Fireflies ─────────────────────────────────────────────────────────────
   const [fireflies, setFireflies] = useState<Firefly[]>([])
   const nextFireflyId = useRef(0)
-
   useEffect(() => {
-    const spawnFirefly = () => {
-      const x     = 8  + Math.random() * 155
+    const spawn = () => {
+      const x = 8 + Math.random() * 155
       const baseY = 410 + Math.random() * 50
       const anim  = new Animated.Value(0)
       const fid   = nextFireflyId.current++
-
       setFireflies(prev => [...prev.slice(-5), { id: fid, x, baseY, anim }])
-
-      Animated.sequence([
-        Animated.timing(anim, { toValue: 1, duration: 3500 + Math.random() * 2000, useNativeDriver: true }),
-      ]).start(() => {
-        setFireflies(prev => prev.filter(f => f.id !== fid))
-      })
+      Animated.timing(anim, { toValue: 1, duration: 3500 + Math.random() * 2000, useNativeDriver: true })
+        .start(() => setFireflies(prev => prev.filter(f => f.id !== fid)))
     }
-
-    spawnFirefly()
-    const id = setInterval(spawnFirefly, 2200)
+    spawn()
+    const id = setInterval(spawn, 2200)
     return () => clearInterval(id)
   }, [])
 
@@ -274,26 +307,21 @@ export default function WorldScreen() {
   const [bubbles, setBubbles] = useState<Bubble[]>([])
   const lastThoughtRef = useRef(-1)
   const nextBubbleId   = useRef(0)
-
   useEffect(() => {
     const thought = liveEvents.find(ev => ev.type === 'entity_thought' || ev.type === 'thought')
     if (!thought || thought.id === lastThoughtRef.current) return
     lastThoughtRef.current = thought.id
-
     const entity = entitiesRef.current.find(e => e.name === (thought as any).name)
     if (!entity) return
     const pos = posRef.current[entity.id]
     if (!pos) return
-
     const x    = (pos.x as any)._value as number
     const y    = (pos.y as any)._value as number
     const text = String((thought as any).thought ?? (thought as any).description ?? '').slice(0, 85)
     const color = emotionColor(String((thought as any).emotion ?? entity.emotional_state?.emotion ?? 'neutral'))
     const anim  = new Animated.Value(0)
     const bid   = nextBubbleId.current++
-
     setBubbles(prev => [...prev.slice(-2), { id: bid, x, y, text, color, anim }])
-
     Animated.sequence([
       Animated.timing(anim, { toValue: 1, duration: 350, useNativeDriver: true }),
       Animated.delay(3200),
@@ -305,101 +333,84 @@ export default function WorldScreen() {
   const [sparks, setSparks] = useState<Spark[]>([])
   const lastBirthRef = useRef(-1)
   const nextSparkId  = useRef(0)
-
   useEffect(() => {
     const birth = liveEvents.find(ev => ev.type === 'entity_born' || ev.type === 'birth')
     if (!birth || birth.id === lastBirthRef.current) return
     lastBirthRef.current = birth.id
-
     const zone   = String((birth as any).zone ?? (birth as any).current_zone ?? 'Garden')
     const region = REGION[zone] ?? REGION.Garden
     const cx     = region.x + 20 + Math.random() * (region.w - 40)
     const cy     = region.y + 10 + Math.random() * (region.h - 20)
     const color  = ZONE_COLOR[zone] ?? '#34d399'
-
-    const NUM = 9
-    const newSparks: Spark[] = Array.from({ length: NUM }, (_, i) => {
-      const angle = (i / NUM) * Math.PI * 2 + Math.random() * 0.4
+    const newSparks: Spark[] = Array.from({ length: 9 }, (_, i) => {
+      const angle = (i / 9) * Math.PI * 2 + Math.random() * 0.4
       const dist  = 18 + Math.random() * 20
       return {
-        id:    nextSparkId.current++,
-        x:     cx,
-        y:     cy,
-        dx:    Math.cos(angle) * dist,
-        dy:    Math.sin(angle) * dist,
-        anim:  new Animated.Value(0),
+        id: nextSparkId.current++, x: cx, y: cy,
+        dx: Math.cos(angle) * dist, dy: Math.sin(angle) * dist,
+        anim: new Animated.Value(0),
         color: i % 2 === 0 ? color : '#ffffff',
       }
     })
-
     setSparks(prev => [...prev.slice(-20), ...newSparks])
-
-    newSparks.forEach(spark => {
-      Animated.timing(spark.anim, { toValue: 1, duration: 800, useNativeDriver: true }).start(
-        () => setSparks(prev => prev.filter(s => s.id !== spark.id))
-      )
+    newSparks.forEach(s => {
+      Animated.timing(s.anim, { toValue: 1, duration: 800, useNativeDriver: true })
+        .start(() => setSparks(prev => prev.filter(x => x.id !== s.id)))
     })
   }, [liveEvents])
 
-  // ── Encounter animation + ripple ──────────────────────────────────────────
+  // ── Encounter ripple ──────────────────────────────────────────────────────
   const [ripples, setRipples] = useState<Ripple[]>([])
   const lastEncounterRef = useRef(-1)
   const nextRippleId     = useRef(0)
-
   useEffect(() => {
     const enc = liveEvents.find(ev => ev.type === 'encounter')
     if (!enc || enc.id === lastEncounterRef.current) return
     lastEncounterRef.current = enc.id
-
     const idA = (enc.entity_a as { id: number }).id
     const idB = (enc.entity_b as { id: number }).id
     const posA = posRef.current[idA]
     const posB = posRef.current[idB]
     if (!posA || !posB) return
-
     const axV = (posA.x as any)._value as number
     const ayV = (posA.y as any)._value as number
     const bxV = (posB.x as any)._value as number
     const byV = (posB.y as any)._value as number
     const midX = (axV + bxV) / 2
     const midY = (ayV + byV) / 2
-
     Animated.parallel([
       Animated.timing(posA.x, { toValue: midX - 14, duration: 900, useNativeDriver: false }),
       Animated.timing(posA.y, { toValue: midY,      duration: 900, useNativeDriver: false }),
       Animated.timing(posB.x, { toValue: midX + 4,  duration: 900, useNativeDriver: false }),
       Animated.timing(posB.y, { toValue: midY,      duration: 900, useNativeDriver: false }),
     ]).start(() => {
-      const zoneA = entitiesRef.current.find(e => e.id === idA)?.current_zone ?? 'Garden'
-      const zoneB = entitiesRef.current.find(e => e.id === idB)?.current_zone ?? 'Garden'
+      const zA = entitiesRef.current.find(e => e.id === idA)?.current_zone ?? 'Garden'
+      const zB = entitiesRef.current.find(e => e.id === idB)?.current_zone ?? 'Garden'
       Animated.parallel([
-        Animated.timing(posA.x, { toValue: randomInRegion(zoneA).x, duration: 1400, useNativeDriver: false }),
-        Animated.timing(posA.y, { toValue: randomInRegion(zoneA).y, duration: 1400, useNativeDriver: false }),
-        Animated.timing(posB.x, { toValue: randomInRegion(zoneB).x, duration: 1400, useNativeDriver: false }),
-        Animated.timing(posB.y, { toValue: randomInRegion(zoneB).y, duration: 1400, useNativeDriver: false }),
+        Animated.timing(posA.x, { toValue: randomInRegion(zA).x, duration: 1400, useNativeDriver: false }),
+        Animated.timing(posA.y, { toValue: randomInRegion(zA).y, duration: 1400, useNativeDriver: false }),
+        Animated.timing(posB.x, { toValue: randomInRegion(zB).x, duration: 1400, useNativeDriver: false }),
+        Animated.timing(posB.y, { toValue: randomInRegion(zB).y, duration: 1400, useNativeDriver: false }),
       ]).start()
     })
-
     const valA  = (enc as any).relationship_a_to_b ?? 'neutral'
     const rColor = valA === 'friend' ? '#34d399' : valA === 'rival' ? '#f87171' : valA === 'family' ? '#a78bfa' : '#94a3b8'
-
-    const makeRipple = (delay: number, color: string) => {
-      const scaleAnim   = new Animated.Value(0.05)
-      const opacityAnim = new Animated.Value(delay === 0 ? 0.85 : 0.5)
+    const makeRipple = (delay: number) => {
+      const sa = new Animated.Value(0.05), oa = new Animated.Value(delay === 0 ? 0.85 : 0.5)
       const rid = nextRippleId.current++
-      setRipples(prev => [...prev.slice(-6), { id: rid, x: midX, y: midY, scaleAnim, opacityAnim, color }])
+      setRipples(prev => [...prev.slice(-6), { id: rid, x: midX, y: midY, scaleAnim: sa, opacityAnim: oa, color: rColor }])
       setTimeout(() => {
         Animated.parallel([
-          Animated.timing(scaleAnim,   { toValue: 1, duration: 1200 + delay * 0.5, useNativeDriver: true }),
-          Animated.timing(opacityAnim, { toValue: 0, duration: 1200 + delay * 0.5, useNativeDriver: true }),
+          Animated.timing(sa, { toValue: 1, duration: 1200, useNativeDriver: true }),
+          Animated.timing(oa, { toValue: 0, duration: 1200, useNativeDriver: true }),
         ]).start(() => setRipples(prev => prev.filter(r => r.id !== rid)))
       }, delay)
     }
-    makeRipple(0,   rColor)
-    makeRipple(280, rColor)
+    makeRipple(0)
+    makeRipple(280)
   }, [liveEvents])
 
-  // ── Entity wandering ──────────────────────────────────────────────────────
+  // ── Wandering ─────────────────────────────────────────────────────────────
   useEffect(() => {
     const id = setInterval(() => {
       entitiesRef.current.forEach(entity => {
@@ -483,19 +494,41 @@ export default function WorldScreen() {
     lastOffset.current = { x: INIT_TX, y: INIT_TY }
   }
 
+  // Zone navigation
+  const goToZone = (zone: string) => {
+    const r = REGION[zone] ?? REGION.Garden
+    const targetX = -(r.x + r.w / 2 - W / 2) * INIT_SCALE + 20
+    Animated.parallel([
+      Animated.spring(scale,      { toValue: INIT_SCALE, useNativeDriver: false, friction: 7 }),
+      Animated.spring(translateX, { toValue: targetX,    useNativeDriver: false, friction: 7 }),
+      Animated.spring(translateY, { toValue: INIT_TY,    useNativeDriver: false, friction: 7 }),
+    ]).start()
+    lastScale.current  = INIT_SCALE
+    lastOffset.current = { x: targetX, y: INIT_TY }
+  }
+
   const latestEvent = liveEvents[0] ?? null
   const pulseGlowOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.25, 0.72] })
+
+  // Zone counts for minimap
+  const zoneCounts = ZONES.reduce((acc, z) => {
+    acc[z] = entities.filter(e => e.current_zone === z).length
+    return acc
+  }, {} as Record<string, number>)
 
   return (
     <View style={styles.container}>
 
       {/* ── Header ── */}
       <View style={styles.header}>
-        <View>
+        <View style={styles.headerLeft}>
           <Text style={styles.headerTitle}>Uberis</Text>
-          <Text style={styles.headerSub}>
-            {entities.length} vivos · t{worldState.current_tick}
-          </Text>
+          <View style={styles.headerSubRow}>
+            <Text style={styles.headerSub}>{entities.length} vivos · t{worldState.current_tick}</Text>
+            <View style={styles.sparklineWrap}>
+              <Sparkline data={popHistory} color="#22d3ee" w={52} h={16} />
+            </View>
+          </View>
         </View>
         <View style={styles.headerRight}>
           {isThinking ? (
@@ -543,19 +576,14 @@ export default function WorldScreen() {
           styles.canvas,
           { transform: [{ translateX }, { translateY }, { scale }] },
         ]}>
-
           {/* ══════════════ SVG WORLD ══════════════ */}
           <Svg width={W} height={H} style={StyleSheet.absoluteFill} pointerEvents="none">
             <Defs>
               <LinearGradient id="sky" x1="0%" y1="0%" x2="100%" y2="0%">
-                <Stop offset="0%"   stopColor="#061520" />
-                <Stop offset="18%"  stopColor="#0a2515" />
-                <Stop offset="25%"  stopColor="#152e18" />
-                <Stop offset="38%"  stopColor="#18120a" />
-                <Stop offset="50%"  stopColor="#2a1505" />
-                <Stop offset="62%"  stopColor="#0d0615" />
-                <Stop offset="75%"  stopColor="#06021a" />
-                <Stop offset="87%"  stopColor="#080205" />
+                <Stop offset="0%"   stopColor="#061520" /><Stop offset="18%"  stopColor="#0a2515" />
+                <Stop offset="25%"  stopColor="#152e18" /><Stop offset="38%"  stopColor="#18120a" />
+                <Stop offset="50%"  stopColor="#2a1505" /><Stop offset="62%"  stopColor="#0d0615" />
+                <Stop offset="75%"  stopColor="#06021a" /><Stop offset="87%"  stopColor="#080205" />
                 <Stop offset="100%" stopColor="#0c0308" />
               </LinearGradient>
               <LinearGradient id="skyVig" x1="0%" y1="0%" x2="0%" y2="100%">
@@ -563,21 +591,17 @@ export default function WorldScreen() {
                 <Stop offset="40%"  stopColor="#000000" stopOpacity="0.1" />
                 <Stop offset="100%" stopColor="#000000" stopOpacity="0" />
               </LinearGradient>
-              <LinearGradient id="gGarden" x1="0%" y1="0%" x2="0%" y2="100%">
-                <Stop offset="0%"   stopColor="#14532d" />
-                <Stop offset="100%" stopColor="#052e16" />
+              <LinearGradient id="gGarden"  x1="0%" y1="0%" x2="0%" y2="100%">
+                <Stop offset="0%" stopColor="#14532d" /><Stop offset="100%" stopColor="#052e16" />
               </LinearGradient>
               <LinearGradient id="gArchive" x1="0%" y1="0%" x2="0%" y2="100%">
-                <Stop offset="0%"   stopColor="#78350f" />
-                <Stop offset="100%" stopColor="#451a03" />
+                <Stop offset="0%" stopColor="#78350f" /><Stop offset="100%" stopColor="#451a03" />
               </LinearGradient>
-              <LinearGradient id="gVoid" x1="0%" y1="0%" x2="0%" y2="100%">
-                <Stop offset="0%"   stopColor="#1e1b4b" />
-                <Stop offset="100%" stopColor="#0d0b2a" />
+              <LinearGradient id="gVoid"    x1="0%" y1="0%" x2="0%" y2="100%">
+                <Stop offset="0%" stopColor="#1e1b4b" /><Stop offset="100%" stopColor="#0d0b2a" />
               </LinearGradient>
-              <LinearGradient id="gStorm" x1="0%" y1="0%" x2="0%" y2="100%">
-                <Stop offset="0%"   stopColor="#180a0a" />
-                <Stop offset="100%" stopColor="#080404" />
+              <LinearGradient id="gStorm"   x1="0%" y1="0%" x2="0%" y2="100%">
+                <Stop offset="0%" stopColor="#180a0a" /><Stop offset="100%" stopColor="#080404" />
               </LinearGradient>
               <LinearGradient id="mistGarden" x1="0%" y1="0%" x2="0%" y2="100%">
                 <Stop offset="0%"   stopColor="#1a4a28" stopOpacity="0" />
@@ -591,23 +615,14 @@ export default function WorldScreen() {
 
             <Rect x={0} y={0} width={W} height={H} fill="url(#sky)" />
             <Rect x={0} y={0} width={W} height={340} fill="url(#skyVig)" />
-
-            {/* Static Void stars */}
             {V_STARS_STATIC.map((s, i) => (
               <Circle key={`vs${i}`} cx={s.cx} cy={s.cy} r={s.r} fill="#ddd6fe" opacity={s.op} />
             ))}
-
-            {/* Moon */}
             <Circle cx={490} cy={60} r={28} fill="#a78bfa" opacity={0.45} />
             <Circle cx={502} cy={54} r={24} fill="#030110" opacity={0.98} />
             <Circle cx={488} cy={65} r={4}  fill="#7c3aed" opacity={0.2} />
-            <Circle cx={498} cy={75} r={2.5} fill="#6d28d9" opacity={0.18} />
-
-            {/* Garden stars */}
             <Circle cx={30}  cy={40} r={2}   fill="#fde68a" opacity={0.7} />
             <Circle cx={128} cy={28} r={1.5} fill="#fef9c3" opacity={0.65} />
-
-            {/* Storm clouds */}
             {([540,558,576,594,612,630,648,666,684,700] as number[]).map((cx, i) => (
               <G key={`sc${i}`}>
                 <Circle cx={cx}   cy={35} r={20} fill="#0c0505" opacity={0.85} />
@@ -617,19 +632,14 @@ export default function WorldScreen() {
             {([548,568,588,608,628,648,668,688] as number[]).map((cx, i) => (
               <Circle key={`sc2${i}`} cx={cx} cy={62} r={16} fill="#180a0a" opacity={0.75} />
             ))}
-            <Path d="M 560,70 L 552,108 L 565,104 L 555,148" stroke="#fbbf24" strokeWidth={3}   fill="none" opacity={0.9} />
-            <Path d="M 560,70 L 552,108 L 565,104 L 555,148" stroke="#fef9c3" strokeWidth={1.2} fill="none" opacity={0.65} />
-            <Path d="M 628,55 L 620,96 L 633,92 L 623,136" stroke="#f59e0b" strokeWidth={2.5} fill="none" opacity={0.8} />
-            <Path d="M 628,55 L 620,96 L 633,92 L 623,136" stroke="#fef08a" strokeWidth={1}   fill="none" opacity={0.55} />
-            <Path d="M 688,68 L 680,108 L 693,104 L 683,148" stroke="#fbbf24" strokeWidth={2.5} fill="none" opacity={0.75} />
+            <SvgPath d="M 560,70 L 552,108 L 565,104 L 555,148" stroke="#fbbf24" strokeWidth={3}   fill="none" opacity={0.9} />
+            <SvgPath d="M 560,70 L 552,108 L 565,104 L 555,148" stroke="#fef9c3" strokeWidth={1.2} fill="none" opacity={0.65} />
+            <SvgPath d="M 628,55 L 620,96 L 633,92 L 623,136" stroke="#f59e0b" strokeWidth={2.5} fill="none" opacity={0.8} />
+            <SvgPath d="M 688,68 L 680,108 L 693,104 L 683,148" stroke="#fbbf24" strokeWidth={2.5} fill="none" opacity={0.75} />
             {S_RAIN.map(([rx, ry], i) => (
-              <Rect key={`rain${i}`} x={rx} y={ry} width={1.5} height={10}
-                fill="#fca5a5" opacity={0.22} rx={1}
-                transform={`rotate(-16 ${rx} ${ry})`} />
+              <Rect key={`rain${i}`} x={rx} y={ry} width={1.5} height={10} fill="#fca5a5" opacity={0.22} rx={1} transform={`rotate(-16 ${rx} ${ry})`} />
             ))}
-
-            {/* Background mountains */}
-            <Path
+            <SvgPath
               d={`M 0,700 L 0,${BG_PEAKS[0][1]} ` + BG_PEAKS.map(([x,y]) => `L ${x},${y}`).join(' ') + ` L 700,700 Z`}
               fill="#1a2840" opacity={0.72}
             />
@@ -639,18 +649,14 @@ export default function WorldScreen() {
             {BG_PEAKS.filter(([,y]) => y < 255).map(([px,py], i) => (
               <Polygon key={`snowh${i}`} points={`${px},${py} ${px-3},${py+5} ${px+3},${py+5}`} fill="#ffffff" opacity={0.7} />
             ))}
-
-            {/* Near zone terrain */}
-            <Path d="M 0,700 L 0,415 L 18,395 L 38,410 L 58,388 L 80,408 L 100,385 L 122,408 L 145,392 L 168,410 L 175,405 L 175,700 Z" fill="url(#gGarden)" opacity={0.95} />
-            <Path d="M 175,700 L 175,405 L 192,392 L 212,408 L 232,388 L 252,405 L 272,388 L 292,408 L 312,392 L 332,408 L 350,395 L 350,700 Z" fill="url(#gArchive)" opacity={0.95} />
-            <Path d="M 350,700 L 350,395 L 368,382 L 388,398 L 408,380 L 428,398 L 448,382 L 468,398 L 488,380 L 508,398 L 525,390 L 525,700 Z" fill="url(#gVoid)" opacity={0.95} />
-            <Path d="M 525,700 L 525,390 L 542,378 L 562,392 L 580,375 L 600,390 L 618,375 L 638,390 L 658,375 L 678,390 L 700,380 L 700,700 Z" fill="url(#gStorm)" opacity={0.95} />
-
-            {/* Garden features */}
+            <SvgPath d="M 0,700 L 0,415 L 18,395 L 38,410 L 58,388 L 80,408 L 100,385 L 122,408 L 145,392 L 168,410 L 175,405 L 175,700 Z" fill="url(#gGarden)" opacity={0.95} />
+            <SvgPath d="M 175,700 L 175,405 L 192,392 L 212,408 L 232,388 L 252,405 L 272,388 L 292,408 L 312,392 L 332,408 L 350,395 L 350,700 Z" fill="url(#gArchive)" opacity={0.95} />
+            <SvgPath d="M 350,700 L 350,395 L 368,382 L 388,398 L 408,380 L 428,398 L 448,382 L 468,398 L 488,380 L 508,398 L 525,390 L 525,700 Z" fill="url(#gVoid)" opacity={0.95} />
+            <SvgPath d="M 525,700 L 525,390 L 542,378 L 562,392 L 580,375 L 600,390 L 618,375 L 638,390 L 658,375 L 678,390 L 700,380 L 700,700 Z" fill="url(#gStorm)" opacity={0.95} />
             <G>
-              <Path d={G_RIVER_D} fill="none" stroke="#2563eb" strokeWidth={10} opacity={0.28} />
-              <Path d={G_RIVER_D} fill="none" stroke="#93c5fd" strokeWidth={5}  opacity={0.3} />
-              <Path d={G_RIVER_D} fill="none" stroke="#bfdbfe" strokeWidth={2}  opacity={0.2} />
+              <SvgPath d={G_RIVER_D} fill="none" stroke="#2563eb" strokeWidth={10} opacity={0.28} />
+              <SvgPath d={G_RIVER_D} fill="none" stroke="#93c5fd" strokeWidth={5}  opacity={0.3} />
+              <SvgPath d={G_RIVER_D} fill="none" stroke="#bfdbfe" strokeWidth={2}  opacity={0.2} />
               {G_TREES.map(([tx,ty], i) => (
                 <G key={`gt${i}`} transform={`translate(${tx - 8},${ty - 20})`}>
                   <Rect x={5} y={16} width={5} height={14} fill="#713f12" opacity={0.75} rx={1} />
@@ -668,8 +674,6 @@ export default function WorldScreen() {
               <Ellipse cx={142} cy={455} rx={16} ry={7}  fill="#60a5fa" opacity={0.18} />
               <Rect x={0} y={420} width={175} height={280} fill="url(#mistGarden)" />
             </G>
-
-            {/* Archive features */}
             <G>
               <Rect x={178} y={455} width={168} height={20} fill="#1c1917" opacity={0.5} rx={2} />
               {A_COLS.map(([cx,cy], i) => (
@@ -682,54 +686,33 @@ export default function WorldScreen() {
               {A_RUIN_BLOCKS.map((b, i) => (
                 <Rect key={`rb${i}`} x={b.x} y={b.y} width={b.w} height={b.h} fill="#57534e" opacity={0.6} rx={2} />
               ))}
-              <Path d="M 210,440 L 215,430 L 220,440 L 225,430" stroke="#f59e0b" strokeWidth={1.5} fill="none" opacity={0.4} />
+              <SvgPath d="M 210,440 L 215,430 L 220,440 L 225,430" stroke="#f59e0b" strokeWidth={1.5} fill="none" opacity={0.4} />
               <Circle cx={255} cy={445} r={7} fill="none" stroke="#f59e0b" strokeWidth={1.5} opacity={0.35} />
-              <Path d="M 252,445 L 258,445 M 255,442 L 255,448" stroke="#f59e0b" strokeWidth={1.5} opacity={0.35} />
-              <Path d="M 290,440 C 298,433 306,442 314,433 C 322,424 330,433 338,424" fill="none" stroke="#d97706" strokeWidth={1} opacity={0.3} />
+              <SvgPath d="M 252,445 L 258,445 M 255,442 L 255,448" stroke="#f59e0b" strokeWidth={1.5} opacity={0.35} />
             </G>
-
-            {/* Void features */}
             <G>
               <Ellipse cx={388} cy={240} rx={45} ry={22} fill="#7c3aed" opacity={0.1} />
               <Ellipse cx={425} cy={268} rx={35} ry={16} fill="#6d28d9" opacity={0.09} />
-              <Ellipse cx={475} cy={250} rx={40} ry={18} fill="#4f46e5" opacity={0.09} />
               <Ellipse cx={438} cy={462} rx={55} ry={18} fill="#0d0b2a" opacity={0.9} />
               <Ellipse cx={438} cy={462} rx={42} ry={13} fill="#1e1b4b" opacity={0.6} />
               <Ellipse cx={438} cy={458} rx={28} ry={7}  fill="#4c1d95" opacity={0.35} />
               <Circle cx={425} cy={463} r={1}   fill="#c4b5fd" opacity={0.5} />
               <Circle cx={448} cy={460} r={1}   fill="#a78bfa" opacity={0.5} />
-              <Circle cx={436} cy={468} r={0.8} fill="#818cf8" opacity={0.45} />
               <Polygon points="362,455 358,435 366,435" fill="#7c3aed" opacity={0.7} />
-              <Polygon points="362,455 358,440 366,440" fill="#a78bfa" opacity={0.35} />
               <Polygon points="378,458 373,438 383,438" fill="#6d28d9" opacity={0.65} />
-              <Polygon points="378,458 373,443 383,443" fill="#c4b5fd" opacity={0.3} />
               <Polygon points="505,458 500,436 510,436" fill="#7c3aed" opacity={0.6} />
-              <Polygon points="505,458 500,442 510,442" fill="#a78bfa" opacity={0.3} />
               <Polygon points="518,455 514,438 522,438" fill="#6d28d9" opacity={0.55} />
               <Rect x={350} y={418} width={175} height={282} fill="url(#mistVoid)" />
             </G>
-
-            {/* Storm features */}
             <G>
               <Ellipse cx={562} cy={468} rx={38} ry={12} fill="#1e3a5f" opacity={0.55} />
               <Ellipse cx={562} cy={468} rx={28} ry={8}  fill="#1d4ed8" opacity={0.22} />
               <Ellipse cx={638} cy={475} rx={30} ry={10} fill="#1e3a5f" opacity={0.48} />
               <Ellipse cx={688} cy={470} rx={20} ry={7}  fill="#1e3a5f" opacity={0.42} />
-              <Ellipse cx={558} cy={472} rx={20} ry={5}  fill="#fbbf24" opacity={0.07} />
-              <Ellipse cx={560} cy={420} rx={45} ry={15} fill="#fbbf24" opacity={0.05} />
             </G>
-
-            {/* Zone pill backgrounds */}
-            {[
-              { zone: 'Garden',  x: ZW * 0.5 },
-              { zone: 'Archive', x: ZW + ZW * 0.5 },
-              { zone: 'Void',    x: ZW * 2 + ZW * 0.5 },
-              { zone: 'Storm',   x: ZW * 3 + ZW * 0.5 },
-            ].map(({ zone, x }) => (
-              <Rect key={zone} x={x - 30} y={12} width={60} height={18} rx={9} fill={ZONE_COLOR[zone] + '15'} />
+            {ZONES.map((zone, i) => (
+              <Rect key={zone} x={i * ZW + ZW/2 - 30} y={12} width={60} height={18} rx={9} fill={ZONE_COLOR[zone] + '15'} />
             ))}
-
-            {/* User buildings */}
             {buildings.map(b => {
               if (b.type === 'house') return <HouseShape key={b.id} x={b.x} y={b.y} />
               if (b.type === 'rock')  return <RockShape  key={b.id} x={b.x} y={b.y} />
@@ -738,7 +721,7 @@ export default function WorldScreen() {
             })}
           </Svg>
 
-          {/* ── Zone labels ── */}
+          {/* Zone labels */}
           {[
             { zone: 'Garden',  left: ZW * 0 + ZW/2 - 28, top: 16 },
             { zone: 'Archive', left: ZW * 1 + ZW/2 - 28, top: 16 },
@@ -746,60 +729,39 @@ export default function WorldScreen() {
             { zone: 'Storm',   left: ZW * 3 + ZW/2 - 30, top: 16 },
           ].map(({ zone, left, top }) => (
             <View key={zone} style={[styles.zoneLabel, { left, top }]}>
-              <Text style={[styles.zoneName, { color: ZONE_COLOR[zone] }]}>
-                {ZONE_NAME_ES[zone]}
-              </Text>
+              <Text style={[styles.zoneName, { color: ZONE_COLOR[zone] }]}>{ZONE_NAME_ES[zone]}</Text>
             </View>
           ))}
 
-          {/* ── Animated Void stars (twinkle) ── */}
-          {TWINKLE_STARS.map((star, i) => {
-            const anim = twinkleAnims[i]
-            const opacity = anim.interpolate({ inputRange: [0, 1], outputRange: [0.15, 1] })
-            return (
-              <Animated.View key={`ts${i}`} style={[styles.twinkleStar, {
-                left: star.cx - star.r,
-                top:  star.cy - star.r,
-                width: star.r * 2,
-                height: star.r * 2,
-                borderRadius: star.r,
-                opacity,
-              }]} />
-            )
-          })}
-
-          {/* ── Garden fireflies ── */}
-          {fireflies.map(ff => {
-            const opacity = ff.anim.interpolate({
-              inputRange: [0, 0.15, 0.75, 1],
-              outputRange: [0, 1,   0.85, 0],
-            })
-            const translateY = ff.anim.interpolate({
-              inputRange: [0, 1],
-              outputRange: [0, -38],
-            })
-            return (
-              <Animated.View key={ff.id} style={[styles.firefly, {
-                left: ff.x,
-                top:  ff.baseY,
-                opacity,
-                transform: [{ translateY }],
-              }]} />
-            )
-          })}
-
-          {/* ── Encounter ripples ── */}
-          {ripples.map(ripple => (
-            <Animated.View key={ripple.id} style={[styles.ripple, {
-              left:        ripple.x - 44,
-              top:         ripple.y - 44,
-              borderColor: ripple.color,
-              opacity:     ripple.opacityAnim,
-              transform:   [{ scale: ripple.scaleAnim }],
+          {/* Twinkling stars */}
+          {TWINKLE_STARS.map((star, i) => (
+            <Animated.View key={`ts${i}`} style={[styles.twinkleStar, {
+              left: star.cx - star.r, top: star.cy - star.r,
+              width: star.r * 2, height: star.r * 2, borderRadius: star.r,
+              opacity: twinkleAnims[i].interpolate({ inputRange: [0,1], outputRange: [0.15, 1] }),
             }]} />
           ))}
 
-          {/* ── Entity nodes ── */}
+          {/* Fireflies */}
+          {fireflies.map(ff => (
+            <Animated.View key={ff.id} style={[styles.firefly, {
+              left: ff.x, top: ff.baseY,
+              opacity:   ff.anim.interpolate({ inputRange: [0,0.15,0.75,1], outputRange: [0,1,0.85,0] }),
+              transform: [{ translateY: ff.anim.interpolate({ inputRange: [0,1], outputRange: [0,-38] }) }],
+            }]} />
+          ))}
+
+          {/* Ripples */}
+          {ripples.map(r => (
+            <Animated.View key={r.id} style={[styles.ripple, {
+              left: r.x - 44, top: r.y - 44,
+              borderColor: r.color,
+              opacity: r.opacityAnim,
+              transform: [{ scale: r.scaleAnim }],
+            }]} />
+          ))}
+
+          {/* Entities */}
           {entities.map(entity => {
             const pos = posRef.current[entity.id]
             if (!pos) return null
@@ -810,10 +772,7 @@ export default function WorldScreen() {
             const energy   = Math.min(100, Math.max(0, Math.round(entity.energy ?? 50)))
             return (
               <Animated.View key={entity.id} style={[styles.entityWrap, { left: pos.x, top: pos.y }]}>
-                <Pressable
-                  onPress={() => setPopup(p => p?.id === entity.id ? null : entity)}
-                  style={styles.entityInner}
-                >
+                <Pressable onPress={() => setPopup(p => p?.id === entity.id ? null : entity)} style={styles.entityInner}>
                   {selected && (
                     <View style={[styles.entitySelect, {
                       width: sz + 20, height: sz + 20, borderRadius: (sz + 20) / 2,
@@ -823,17 +782,14 @@ export default function WorldScreen() {
                   <Animated.View style={[styles.entityGlow, {
                     width: sz + 16, height: sz + 16, borderRadius: (sz + 16) / 2,
                     top: -szH - 8, left: -szH - 8,
-                    borderColor: color + '55',
-                    shadowColor: color,
+                    borderColor: color + '55', shadowColor: color,
                     opacity: pulseGlowOpacity,
                   }]} />
                   <View style={[styles.entityCore, {
                     width: sz, height: sz, borderRadius: szH,
                     backgroundColor: color, shadowColor: color,
                   }]} />
-                  <Text style={[styles.entityLabel, { color }]} numberOfLines={1}>
-                    {entity.name}
-                  </Text>
+                  <Text style={[styles.entityLabel, { color }]} numberOfLines={1}>{entity.name}</Text>
                   <View style={styles.energyTrack}>
                     <View style={[styles.energyFill, {
                       width: `${energy}%` as any,
@@ -845,30 +801,26 @@ export default function WorldScreen() {
             )
           })}
 
-          {/* ── Birth sparks ── */}
-          {sparks.map(spark => {
-            const tx = spark.anim.interpolate({ inputRange: [0,1], outputRange: [0, spark.dx] })
-            const ty = spark.anim.interpolate({ inputRange: [0,1], outputRange: [0, spark.dy] })
-            const op = spark.anim.interpolate({ inputRange: [0, 0.15, 0.65, 1], outputRange: [0, 1, 0.9, 0] })
-            const sc = spark.anim.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0.3, 1.2, 0.5] })
-            return (
-              <Animated.View key={spark.id} style={[styles.spark, {
-                left: spark.x - 3,
-                top:  spark.y - 3,
-                backgroundColor: spark.color,
-                opacity: op,
-                transform: [{ translateX: tx }, { translateY: ty }, { scale: sc }],
-              }]} />
-            )
-          })}
+          {/* Birth sparks */}
+          {sparks.map(spark => (
+            <Animated.View key={spark.id} style={[styles.spark, {
+              left: spark.x - 3, top: spark.y - 3,
+              backgroundColor: spark.color,
+              opacity:   spark.anim.interpolate({ inputRange: [0,0.15,0.65,1], outputRange: [0,1,0.9,0] }),
+              transform: [
+                { translateX: spark.anim.interpolate({ inputRange: [0,1], outputRange: [0, spark.dx] }) },
+                { translateY: spark.anim.interpolate({ inputRange: [0,1], outputRange: [0, spark.dy] }) },
+                { scale:      spark.anim.interpolate({ inputRange: [0,0.3,1], outputRange: [0.3,1.2,0.5] }) },
+              ],
+            }]} />
+          ))}
 
-          {/* ── Thought bubbles ── */}
+          {/* Thought bubbles */}
           {bubbles.map(bubble => (
             <Animated.View key={bubble.id} style={[styles.thoughtBubble, {
-              left:        bubble.x - 55,
-              top:         bubble.y - 72,
+              left: bubble.x - 55, top: bubble.y - 72,
               borderColor: bubble.color + '66',
-              opacity:     bubble.anim,
+              opacity: bubble.anim,
             }]}>
               <Text style={[styles.thoughtBubbleTxt, { color: bubble.color + 'dd' }]} numberOfLines={3}>
                 {bubble.text}
@@ -885,6 +837,21 @@ export default function WorldScreen() {
             </View>
           )}
         </Animated.View>
+
+        {/* ── Zone minimap (outside canvas transform) ── */}
+        <View style={styles.minimap}>
+          {ZONES.map(zone => {
+            const count = zoneCounts[zone] ?? 0
+            const pct   = entities.length > 0 ? count / entities.length : 0
+            const barH  = Math.max(2, Math.round(pct * 20))
+            return (
+              <Pressable key={zone} style={styles.minimapZone} onPress={() => goToZone(zone)}>
+                <View style={[styles.minimapBar, { height: barH, backgroundColor: ZONE_COLOR[zone] }]} />
+                <Text style={[styles.minimapCount, { color: ZONE_COLOR[zone] }]}>{count}</Text>
+              </Pressable>
+            )
+          })}
+        </View>
       </View>
 
       {/* ── Build toolbar ── */}
@@ -904,8 +871,8 @@ export default function WorldScreen() {
         </View>
       )}
 
-      {/* ── Live event ticker ── */}
-      {latestEvent && !popup && (
+      {/* ── Live ticker ── */}
+      {latestEvent && !popup && !worldEventText && (
         <View style={styles.ticker}>
           <Text style={styles.tickerText} numberOfLines={1}>
             {latestEvent.type === 'encounter'
@@ -963,16 +930,23 @@ export default function WorldScreen() {
             )
           })()}
           <View style={styles.popupActions}>
-            <Pressable style={styles.popupBtnFeed}
-              onPress={() => { feedEntity(popup.id); setPopup(null) }}>
+            <Pressable style={styles.popupBtnFeed} onPress={() => { feedEntity(popup.id); setPopup(null) }}>
               <Text style={styles.popupBtnTxt}>🍎 Alimentar</Text>
             </Pressable>
-            <Pressable style={styles.popupBtnDetail}
-              onPress={() => { setPopup(null); router.push(`/entity/${popup.id}`) }}>
+            <Pressable style={styles.popupBtnDetail} onPress={() => { setPopup(null); router.push(`/entity/${popup.id}`) }}>
               <Text style={styles.popupBtnTxt}>Ver más →</Text>
             </Pressable>
           </View>
         </View>
+      )}
+
+      {/* ── World event cinematic ── */}
+      {worldEventText && (
+        <Animated.View style={[styles.worldEventOverlay, { opacity: overlayAnim }]} pointerEvents="none">
+          <Text style={styles.worldEventIcon}>🌍</Text>
+          <Text style={styles.worldEventTitle}>Evento del mundo</Text>
+          <Text style={styles.worldEventText}>{worldEventText}</Text>
+        </Animated.View>
       )}
 
       {/* ── Controls ── */}
@@ -1002,16 +976,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14, paddingTop: 10, paddingBottom: 8,
     borderBottomWidth: 1, borderBottomColor: COLORS.border,
   },
-  headerTitle: { fontSize: 17, fontWeight: '800', color: '#22d3ee', letterSpacing: 0.5 },
-  headerSub:   { fontSize: 11, color: COLORS.textMuted },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  dotLive:     { width: 8, height: 8, borderRadius: 4, backgroundColor: '#22c55e' },
+  headerLeft:   { flex: 1 },
+  headerTitle:  { fontSize: 17, fontWeight: '800', color: '#22d3ee', letterSpacing: 0.5 },
+  headerSubRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 1 },
+  headerSub:    { fontSize: 11, color: COLORS.textMuted },
+  sparklineWrap:{ opacity: 0.9 },
+  headerRight:  { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  dotLive:      { width: 8, height: 8, borderRadius: 4, backgroundColor: '#22c55e' },
   thinkingBadge: { backgroundColor: '#0e7490', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
   thinkingTxt:   { fontSize: 10, fontWeight: '700', color: '#22d3ee' },
-  apiBadge:    { backgroundColor: '#052e16', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3, borderWidth: 1, borderColor: '#166534' },
-  apiTxt:      { fontSize: 10, fontWeight: '600', color: '#22c55e' },
-  apiBadgeOff: { backgroundColor: '#1c1917', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
-  apiTxtOff:   { fontSize: 10, color: COLORS.textDim },
+  apiBadge:     { backgroundColor: '#052e16', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3, borderWidth: 1, borderColor: '#166534' },
+  apiTxt:       { fontSize: 10, fontWeight: '600', color: '#22c55e' },
+  apiBadgeOff:  { backgroundColor: '#1c1917', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
+  apiTxtOff:    { fontSize: 10, color: COLORS.textDim },
 
   canvasWrap: { flex: 1, overflow: 'hidden' },
   canvas:     { width: W, height: H, position: 'absolute', top: 0, left: 0 },
@@ -1022,27 +999,26 @@ const styles = StyleSheet.create({
     textShadowColor: '#000', textShadowRadius: 4, textShadowOffset: { width: 0, height: 1 },
   },
 
-  twinkleStar: {
-    position: 'absolute',
-    backgroundColor: '#ddd6fe',
+  minimap: {
+    position: 'absolute', bottom: 10, left: 12,
+    flexDirection: 'row', gap: 4,
+    backgroundColor: '#020b18cc', borderRadius: 8, padding: 6,
+    borderWidth: 1, borderColor: COLORS.border,
+    alignItems: 'flex-end',
   },
+  minimapZone:  { alignItems: 'center', width: 28, gap: 2 },
+  minimapBar:   { width: 20, borderRadius: 2, minHeight: 2 },
+  minimapCount: { fontSize: 8, fontWeight: '700' },
 
+  twinkleStar:  { position: 'absolute', backgroundColor: '#ddd6fe' },
   firefly: {
-    position: 'absolute',
-    width: 4, height: 4, borderRadius: 2,
+    position: 'absolute', width: 4, height: 4, borderRadius: 2,
     backgroundColor: '#86efac',
     shadowColor: '#22c55e', shadowOpacity: 1, shadowRadius: 4, shadowOffset: { width: 0, height: 0 },
   },
-
-  ripple: {
-    position: 'absolute',
-    width: 88, height: 88, borderRadius: 44,
-    borderWidth: 2,
-  },
-
+  ripple: { position: 'absolute', width: 88, height: 88, borderRadius: 44, borderWidth: 2 },
   spark: {
-    position: 'absolute',
-    width: 6, height: 6, borderRadius: 3,
+    position: 'absolute', width: 6, height: 6, borderRadius: 3,
     shadowOpacity: 0.8, shadowRadius: 4, shadowOffset: { width: 0, height: 0 },
   },
 
@@ -1059,11 +1035,8 @@ const styles = StyleSheet.create({
   energyFill:  { height: 2, borderRadius: 1, opacity: 0.7 },
 
   thoughtBubble: {
-    position: 'absolute',
-    maxWidth: 110,
-    backgroundColor: '#020b18e8',
-    borderRadius: 8, borderWidth: 1,
-    padding: 5, paddingHorizontal: 7,
+    position: 'absolute', maxWidth: 110, backgroundColor: '#020b18e8',
+    borderRadius: 8, borderWidth: 1, padding: 5, paddingHorizontal: 7,
   },
   thoughtBubbleTxt: { fontSize: 8, fontStyle: 'italic', lineHeight: 11 },
   thoughtNotch: {
@@ -1072,6 +1045,16 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4, borderRightWidth: 4, borderTopWidth: 5,
     borderLeftColor: 'transparent', borderRightColor: 'transparent',
   },
+
+  worldEventOverlay: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: '#010812e8',
+    alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: 32,
+  },
+  worldEventIcon:  { fontSize: 42, marginBottom: 12 },
+  worldEventTitle: { fontSize: 11, fontWeight: '700', color: '#fde68a', letterSpacing: 2, textTransform: 'uppercase', marginBottom: 10, opacity: 0.7 },
+  worldEventText:  { fontSize: 16, color: COLORS.text, textAlign: 'center', lineHeight: 24, fontStyle: 'italic' },
 
   buildOverlay: { justifyContent: 'flex-end', paddingBottom: 12, alignItems: 'center' },
   buildHint: {
@@ -1115,7 +1098,7 @@ const styles = StyleSheet.create({
   popupActions: { flexDirection: 'row', gap: 8 },
   popupBtnFeed: { flex: 1, backgroundColor: '#052e16', borderRadius: 8, paddingVertical: 8, alignItems: 'center', borderWidth: 1, borderColor: '#166534' },
   popupBtnDetail:{ flex: 1, backgroundColor: '#0c1a2e', borderRadius: 8, paddingVertical: 8, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border },
-  popupBtnTxt: { fontSize: 12, fontWeight: '700', color: COLORS.text },
+  popupBtnTxt:  { fontSize: 12, fontWeight: '700', color: COLORS.text },
 
   zoomCtrl: { position: 'absolute', bottom: 24, right: 14, gap: 8 },
   zoomBtn: {
