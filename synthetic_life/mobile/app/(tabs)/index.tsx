@@ -1,9 +1,9 @@
 /**
- * World v23 — Birth location stamps, entity energy aura glow.
- * When a birth event fires, a ✦ glyph stamps at that zone and fades
- * over 8 seconds — leaving a trace of where life began. Entity energy
- * aura border width now scales with energy: high energy = thick bright
- * border, low = thin dim border.
+ * World v24 — Death location markers, era display in header.
+ * When an entity dies, a dark · dot is stamped at that location and
+ * lingers for 12 seconds — a scar on the world. The header now shows
+ * the current Era (every 50 ticks = new era) giving the simulation a
+ * sense of historical progression.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -250,6 +250,7 @@ interface NebWisp      { id: number; x: number; y: number; color: string; len: n
 interface DesireWisp   { id: number; x: number; y: number; text: string; anim: Animated.Value }
 interface TrailEcho    { id: number; x: number; y: number; color: string; anim: Animated.Value }
 interface BirthStamp   { id: number; x: number; y: number; color: string; anim: Animated.Value }
+interface DeathMark    { id: number; x: number; y: number; anim: Animated.Value }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function WorldScreen() {
@@ -285,6 +286,8 @@ export default function WorldScreen() {
   const nextDesireId = useRef(0)
   const [birthStamps, setBirthStamps] = useState<BirthStamp[]>([])
   const nextStampId = useRef(0)
+  const [deathMarks, setDeathMarks] = useState<DeathMark[]>([])
+  const nextDeathMarkId = useRef(0)
   const portalBurstAnim = useRef(new Animated.Value(0)).current
   const [trailEchoes, setTrailEchoes] = useState<TrailEcho[]>([])
   const nextTrailId = useRef(0)
@@ -323,11 +326,12 @@ export default function WorldScreen() {
     if (entities.length === 0) return `t${worldState.current_tick}`
     const avgE = Math.round(entities.reduce((s, e) => s + (e.energy ?? 50), 0) / entities.length)
     const maxGen = Math.max(...entities.map(e => e.generation ?? 0))
-    switch (censusIdx % 4) {
+    switch (censusIdx % 5) {
       case 0: return `${entities.length} vivos · t${worldState.current_tick}`
       case 1: return `energía media: ${avgE}`
       case 2: return `generación máx: G${maxGen}`
       case 3: return `${ZONE_NAME_ES[dominantZone ?? 'Garden']} domina`
+      case 4: return eraLabel
       default: return `t${worldState.current_tick}`
     }
   }, [censusIdx, entities, worldState.current_tick, dominantZone])
@@ -894,6 +898,12 @@ export default function WorldScreen() {
       Animated.timing(s.anim, { toValue: 1, duration: 1400 + Math.random() * 400, useNativeDriver: true })
         .start(() => setSouls(prev => prev.filter(x => x.id !== s.id)))
     })
+    // Leave a death mark at the location
+    const dmAnim = new Animated.Value(1)
+    const dmId = nextDeathMarkId.current++
+    setDeathMarks(prev => [...prev.slice(-12), { id: dmId, x: cx, y: cy, anim: dmAnim }])
+    Animated.timing(dmAnim, { toValue: 0, duration: 12000, useNativeDriver: true })
+      .start(() => setDeathMarks(prev => prev.filter(d => d.id !== dmId)))
   }, [liveEvents])
 
   // ── Grief floating hearts ─────────────────────────────────────────────────
@@ -1138,6 +1148,10 @@ export default function WorldScreen() {
     const totalDeaths = (worldState as any).total_deaths ?? 0
     return { oldest, mostConnected, totalBirths, totalDeaths }
   }, [entities, worldState])
+
+  const currentEra = Math.floor(worldState.current_tick / 50) + 1
+  const eraRoman = ['I','II','III','IV','V','VI','VII','VIII','IX','X']
+  const eraLabel = `Era ${eraRoman[Math.min(currentEra - 1, 9)] ?? currentEra}`
 
   const prophecy = useMemo(() => {
     if (entities.length === 0) return 'El mundo duerme...'
@@ -1792,6 +1806,16 @@ export default function WorldScreen() {
             }]} />
           ))}
 
+          {/* Death location markers */}
+          {deathMarks.map(d => (
+            <Animated.View key={d.id} pointerEvents="none" style={{
+              position: 'absolute', left: d.x - 6, top: d.y - 6,
+              opacity: d.anim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.55] }),
+            }}>
+              <Text style={styles.deathMarkGlyph}>·</Text>
+            </Animated.View>
+          ))}
+
           {/* Grief floating hearts */}
           {griefs.map(g => (
             <Animated.View key={g.id} style={[styles.griefMark, {
@@ -2197,6 +2221,10 @@ const styles = StyleSheet.create({
   },
   birthStampGlyph: {
     fontSize: 16, fontWeight: '300',
+    textShadowColor: '#000', textShadowRadius: 4, textShadowOffset: { width: 0, height: 0 },
+  },
+  deathMarkGlyph: {
+    fontSize: 22, color: '#475569', fontWeight: '700',
     textShadowColor: '#000', textShadowRadius: 4, textShadowOffset: { width: 0, height: 0 },
   },
   elderRing: {
