@@ -1,8 +1,8 @@
 /**
- * World v10 — World prophecy header text, social web ambient lines.
- * A live prophecy line in the header reads the simulation state and names
- * what the world is feeling. Faint relationship web lines connect entities
- * that share bonds — friends green, family violet, rivals red.
+ * World v11 — Void aurora bands, constellation lines, entity energy corona.
+ * Colored aurora waves slowly drift across the Void sky. Star pairs are
+ * joined by faint constellation threads. Entities glow brighter or dimmer
+ * based on their current energy level.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -104,6 +104,22 @@ const V_STARS_STATIC: { cx:number; cy:number; r:number; op:number }[] = [
   {cx:435,cy:160,r:1.8,op:0.8},{cx:458,cy:142,r:1,op:0.65},{cx:480,cy:165,r:1.5,op:0.7},
   {cx:502,cy:148,r:1.2,op:0.65},{cx:522,cy:170,r:1,op:0.6},
   {cx:402,cy:225,r:2.5,op:0.85},{cx:498,cy:210,r:2.5,op:0.8},{cx:518,cy:158,r:3,op:0.7},
+]
+
+// Constellation line index pairs into V_STARS_STATIC
+const CONSTELLATION_PAIRS: [number, number][] = [
+  [0, 1], [1, 2], [2, 3], [3, 6],   // upper arc left→right
+  [5, 6], [4, 5],                    // upper right cluster
+  [1, 9], [9, 14],                   // descent center
+  [22, 21], [21, 20],                // Void portal triangle base
+]
+
+// Aurora bands drifting across Void sky (x: 350-525)
+const AURORA_BANDS = [
+  { y: 72,  color: '#7c3aed', dur: 8200,  phase: 0    },
+  { y: 112, color: '#0d9488', dur: 10500, phase: 0.33 },
+  { y: 152, color: '#4c1d95', dur: 9300,  phase: 0.67 },
+  { y: 198, color: '#065f46', dur: 11400, phase: 0.15 },
 ]
 
 const S_RAIN: [number, number][] = [
@@ -353,6 +369,26 @@ export default function WorldScreen() {
     )
     loop.start()
     return () => loop.stop()
+  }, [])
+
+  // ── Void aurora bands ─────────────────────────────────────────────────────
+  const auroraAnims = useRef(AURORA_BANDS.map(() => new Animated.Value(0))).current
+  useEffect(() => {
+    const cleanups = AURORA_BANDS.map((band, i) => {
+      const anim = auroraAnims[i]
+      anim.setValue(band.phase)
+      let loop: Animated.CompositeAnimation
+      const startLoop = () => {
+        loop = Animated.loop(
+          Animated.timing(anim, { toValue: 1, duration: band.dur, useNativeDriver: true })
+        )
+        loop.start()
+      }
+      const delay = Math.round(band.phase * band.dur)
+      const t = setTimeout(startLoop, delay)
+      return () => { clearTimeout(t); loop?.stop() }
+    })
+    return () => cleanups.forEach(c => c())
   }, [])
 
   // ── Archive zone shimmer ──────────────────────────────────────────────────
@@ -911,6 +947,11 @@ export default function WorldScreen() {
 
             <Rect x={0} y={0} width={W} height={H} fill="url(#sky)" />
             <Rect x={0} y={0} width={W} height={340} fill="url(#skyVig)" />
+            {CONSTELLATION_PAIRS.map(([a, b], i) => {
+              const sa = V_STARS_STATIC[a], sb = V_STARS_STATIC[b]
+              if (!sa || !sb) return null
+              return <SvgPath key={`cl${i}`} d={`M ${sa.cx} ${sa.cy} L ${sb.cx} ${sb.cy}`} stroke="#ddd6fe" strokeWidth={0.6} opacity={0.13} />
+            })}
             {V_STARS_STATIC.map((s, i) => (
               <Circle key={`vs${i}`} cx={s.cx} cy={s.cy} r={s.r} fill="#ddd6fe" opacity={s.op} />
             ))}
@@ -1091,6 +1132,23 @@ export default function WorldScreen() {
             }]} />
           ))}
 
+          {/* Void aurora bands */}
+          {AURORA_BANDS.map((band, i) => (
+            <Animated.View key={`aurora${i}`} pointerEvents="none" style={[styles.auroraBand, {
+              top: band.y, backgroundColor: band.color,
+              opacity: auroraAnims[i].interpolate({
+                inputRange: [0, 0.25, 0.5, 0.75, 1],
+                outputRange: [0.04, 0.22, 0.07, 0.20, 0.04],
+              }),
+              transform: [{
+                translateX: auroraAnims[i].interpolate({
+                  inputRange: [0, 0.25, 0.5, 0.75, 1],
+                  outputRange: [-20, 12, -6, 16, -20],
+                }),
+              }],
+            }]} />
+          ))}
+
           {/* Void vortex rings */}
           <Animated.View pointerEvents="none" style={[styles.vortexOuter, {
             transform: [{ rotate: vortexAnim.interpolate({ inputRange: [0,1], outputRange: ['0deg','360deg'] }) }],
@@ -1172,8 +1230,10 @@ export default function WorldScreen() {
                   <Animated.View style={[styles.entityGlow, {
                     width: sz + 16, height: sz + 16, borderRadius: (sz + 16) / 2,
                     top: -szH - 8, left: -szH - 8,
-                    borderColor: color + '55', shadowColor: color,
+                    borderColor: energy > 60 ? color + '55' : energy > 30 ? '#a0aec066' : '#4a556855',
+                    shadowColor: energy > 60 ? color : energy > 30 ? '#a0aec0' : '#4a5568',
                     opacity: pulseGlowOpacity,
+                    transform: [{ scale: energy > 70 ? 1.1 : energy < 30 ? 0.85 : 1 }],
                   }]} />
                   <View style={[styles.entityCore, {
                     width: sz, height: sz, borderRadius: szH,
@@ -1482,6 +1542,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.7, shadowRadius: 5, shadowOffset: { width: 0, height: 0 },
   },
   socialLine: { position: 'absolute', height: 2, borderRadius: 1 },
+  auroraBand: { position: 'absolute', left: ZW * 2, width: ZW + 6, height: 8, borderRadius: 4 },
   griefMark:  { position: 'absolute' },
   griefEmoji: { fontSize: 14 },
   sleepMark:  { position: 'absolute' },
