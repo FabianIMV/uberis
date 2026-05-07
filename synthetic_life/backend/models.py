@@ -26,15 +26,20 @@ class Entity(Base):
     age_ticks = Column(Integer, default=0)
 
     # Genetic identity
-    genome = Column(JSON, default=dict)  # curiosity, aggression, empathy, creativity, survival_drive
+    genome = Column(JSON, default=dict)
 
     # Mental world
-    memory = Column(JSON, default=list)       # list of strings
-    beliefs = Column(JSON, default=dict)      # key -> belief text
-    emotional_state = Column(JSON, default=dict)  # {emotion, intensity}
+    memory = Column(JSON, default=list)
+    memory_archive = Column(JSON, default=list)   # episodic summaries of compressed old memories
+    beliefs = Column(JSON, default=dict)
+    emotional_state = Column(JSON, default=dict)
     current_desire = Column(Text, nullable=True)
+    current_goal = Column(Text, nullable=True)    # persistent multi-tick goal
     last_thought = Column(Text, nullable=True)
     existential_statement = Column(Text, nullable=True)
+
+    # Relationships: {str(entity_id): {name, valence, intensity, encounters, last_tick, key_memory}}
+    relationships = Column(JSON, default=dict)
 
     # Physical
     energy = Column(Float, default=100.0)
@@ -103,4 +108,4 @@ class WorldState(Base):
     current_tick = Column(Integer, default=0)
     total_births = Column(Integer, default=0)
     total_deaths = Column(Integer, default=0)
-    cultural_beliefs = Column(JSON, default=dict)  # zone -> belief_key -> belief_text
+    cultural_beliefs = Column(JSON, default=dict)
