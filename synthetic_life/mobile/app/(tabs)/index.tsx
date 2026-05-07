@@ -1,7 +1,7 @@
 /**
- * World v8 — Storm lightning, Void shooting stars, generation badges.
- * Lightning flashes and double-pulse illuminate the Storm zone; shooting stars
- * streak across the Void sky; deep-lineage entities display their generation.
+ * World v9 — Void vortex, dream ZZZ, Archive shimmer.
+ * Rotating oval rings swirl at the Void portal; low-energy entities float
+ * sleep bubbles; the Archive breathes with warm amber light.
  */
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -199,6 +199,7 @@ interface GriefMark { id: number; x: number; y: number; anim: Animated.Value }
 interface RelLine      { id: number; x1: number; y1: number; x2: number; y2: number; color: string; anim: Animated.Value }
 interface Pollen       { id: number; x: number; baseY: number; anim: Animated.Value }
 interface ShootingStar { id: number; x: number; y: number; anim: Animated.Value }
+interface SleepMark    { id: number; x: number; y: number; anim: Animated.Value }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function WorldScreen() {
@@ -340,6 +341,53 @@ export default function WorldScreen() {
     }
     t = setTimeout(fire, 9000)
     return () => clearTimeout(t)
+  }, [])
+
+  // ── Void vortex rings ─────────────────────────────────────────────────────
+  const vortexAnim = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(vortexAnim, { toValue: 1, duration: 4800, useNativeDriver: true })
+    )
+    loop.start()
+    return () => loop.stop()
+  }, [])
+
+  // ── Archive zone shimmer ──────────────────────────────────────────────────
+  const archiveShimmer = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout>
+    const glow = () => {
+      Animated.sequence([
+        Animated.timing(archiveShimmer, { toValue: 1, duration: 800,  useNativeDriver: true }),
+        Animated.timing(archiveShimmer, { toValue: 0, duration: 1200, useNativeDriver: true }),
+      ]).start()
+      t = setTimeout(glow, 28000 + Math.random() * 28000)
+    }
+    t = setTimeout(glow, 12000)
+    return () => clearTimeout(t)
+  }, [])
+
+  // ── Dream ZZZ for tired entities ─────────────────────────────────────────
+  const [sleepMarks, setSleepMarks] = useState<SleepMark[]>([])
+  const nextSleepId = useRef(0)
+  useEffect(() => {
+    const check = () => {
+      const sleepy = entitiesRef.current.filter(e => (e.energy ?? 100) < 28)
+      if (sleepy.length === 0) return
+      const entity = sleepy[Math.floor(Math.random() * sleepy.length)]
+      const pos = posRef.current[entity.id]
+      if (!pos) return
+      const x = (pos.x as any)._value as number
+      const y = (pos.y as any)._value as number
+      const anim = new Animated.Value(0)
+      const sid  = nextSleepId.current++
+      setSleepMarks(prev => [...prev.slice(-3), { id: sid, x, y, anim }])
+      Animated.timing(anim, { toValue: 1, duration: 2800, useNativeDriver: true })
+        .start(() => setSleepMarks(prev => prev.filter(s => s.id !== sid)))
+    }
+    const id = setInterval(check, 8500)
+    return () => clearInterval(id)
   }, [])
 
   // ── Storm rain streams ────────────────────────────────────────────────────
@@ -986,6 +1034,19 @@ export default function WorldScreen() {
             }]} />
           ))}
 
+          {/* Void vortex rings */}
+          <Animated.View pointerEvents="none" style={[styles.vortexOuter, {
+            transform: [{ rotate: vortexAnim.interpolate({ inputRange: [0,1], outputRange: ['0deg','360deg'] }) }],
+          }]} />
+          <Animated.View pointerEvents="none" style={[styles.vortexInner, {
+            transform: [{ rotate: vortexAnim.interpolate({ inputRange: [0,1], outputRange: ['0deg','-540deg'] }) }],
+          }]} />
+
+          {/* Archive shimmer */}
+          <Animated.View pointerEvents="none" style={[styles.archiveShimmer, {
+            opacity: archiveShimmer.interpolate({ inputRange: [0, 1], outputRange: [0, 0.07] }),
+          }]} />
+
           {/* Ripples */}
           {ripples.map(r => (
             <Animated.View key={r.id} style={[styles.ripple, {
@@ -1096,6 +1157,17 @@ export default function WorldScreen() {
               transform: [{ translateY: g.anim.interpolate({ inputRange: [0, 1], outputRange: [0, -52] }) }],
             }]}>
               <Text style={styles.griefEmoji}>💔</Text>
+            </Animated.View>
+          ))}
+
+          {/* Dream ZZZ for low-energy entities */}
+          {sleepMarks.map(s => (
+            <Animated.View key={s.id} style={[styles.sleepMark, {
+              left: s.x + 10, top: s.y - 32,
+              opacity: s.anim.interpolate({ inputRange: [0, 0.1, 0.75, 1], outputRange: [0, 0.85, 0.6, 0] }),
+              transform: [{ translateY: s.anim.interpolate({ inputRange: [0, 1], outputRange: [0, -24] }) }],
+            }]}>
+              <Text style={styles.sleepEmoji}>💤</Text>
             </Animated.View>
           ))}
 
@@ -1335,6 +1407,27 @@ const styles = StyleSheet.create({
   },
   griefMark:  { position: 'absolute' },
   griefEmoji: { fontSize: 14 },
+  sleepMark:  { position: 'absolute' },
+  sleepEmoji: { fontSize: 12 },
+  vortexOuter: {
+    position: 'absolute',
+    left: 438 - 32, top: 462 - 24,
+    width: 64, height: 48, borderRadius: 32,
+    borderWidth: 1.5, borderColor: '#7c3aed',
+    opacity: 0.38,
+  },
+  vortexInner: {
+    position: 'absolute',
+    left: 438 - 18, top: 462 - 13,
+    width: 36, height: 26, borderRadius: 18,
+    borderWidth: 1, borderColor: '#4c1d95',
+    opacity: 0.55,
+  },
+  archiveShimmer: {
+    position: 'absolute',
+    left: ZW, top: 0, width: ZW, height: H,
+    backgroundColor: '#f59e0b',
+  },
   lightningFlash: {
     position: 'absolute', left: ZW * 3, top: 0, width: ZW, height: H,
     backgroundColor: '#ffffff',
