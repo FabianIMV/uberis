@@ -1,7 +1,7 @@
 /**
- * World v7 — Day/night atmospheric cycle, encounter relationship lines, Garden pollen.
- * A 90-second day cycle washes the world in dawn/day/dusk tints; encounters draw
- * glowing connection lines between entities; pollen drifts through the Garden.
+ * World v8 — Storm lightning, Void shooting stars, generation badges.
+ * Lightning flashes and double-pulse illuminate the Storm zone; shooting stars
+ * streak across the Void sky; deep-lineage entities display their generation.
  */
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -196,8 +196,9 @@ interface Spark     { id: number; x: number; y: number; dx: number; dy: number; 
 interface Firefly   { id: number; x: number; baseY: number; anim: Animated.Value }
 interface Soul      { id: number; x: number; y: number; dx: number; dy: number; anim: Animated.Value; color: string }
 interface GriefMark { id: number; x: number; y: number; anim: Animated.Value }
-interface RelLine   { id: number; x1: number; y1: number; x2: number; y2: number; color: string; anim: Animated.Value }
-interface Pollen    { id: number; x: number; baseY: number; anim: Animated.Value }
+interface RelLine      { id: number; x1: number; y1: number; x2: number; y2: number; color: string; anim: Animated.Value }
+interface Pollen       { id: number; x: number; baseY: number; anim: Animated.Value }
+interface ShootingStar { id: number; x: number; y: number; anim: Animated.Value }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function WorldScreen() {
@@ -303,6 +304,42 @@ export default function WorldScreen() {
     )
     loop.start()
     return () => loop.stop()
+  }, [])
+
+  // ── Storm lightning flash ─────────────────────────────────────────────────
+  const lightningAnim = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout>
+    const flash = () => {
+      Animated.sequence([
+        Animated.timing(lightningAnim, { toValue: 1,   duration: 75,  useNativeDriver: true }),
+        Animated.timing(lightningAnim, { toValue: 0.25, duration: 55, useNativeDriver: true }),
+        Animated.timing(lightningAnim, { toValue: 0.85, duration: 65, useNativeDriver: true }),
+        Animated.timing(lightningAnim, { toValue: 0,   duration: 130, useNativeDriver: true }),
+      ]).start()
+      t = setTimeout(flash, 14000 + Math.random() * 24000)
+    }
+    t = setTimeout(flash, 6000)
+    return () => clearTimeout(t)
+  }, [])
+
+  // ── Void shooting stars ───────────────────────────────────────────────────
+  const [shootingStars, setShootingStars] = useState<ShootingStar[]>([])
+  const nextStarId = useRef(0)
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout>
+    const fire = () => {
+      const x   = 355 + Math.random() * 140
+      const y   = 12  + Math.random() * 155
+      const anim = new Animated.Value(0)
+      const sid  = nextStarId.current++
+      setShootingStars(prev => [...prev.slice(-2), { id: sid, x, y, anim }])
+      Animated.timing(anim, { toValue: 1, duration: 620, useNativeDriver: true })
+        .start(() => setShootingStars(prev => prev.filter(s => s.id !== sid)))
+      t = setTimeout(fire, 20000 + Math.random() * 25000)
+    }
+    t = setTimeout(fire, 9000)
+    return () => clearTimeout(t)
   }, [])
 
   // ── Storm rain streams ────────────────────────────────────────────────────
@@ -931,6 +968,24 @@ export default function WorldScreen() {
           {/* Storm breathing pulse */}
           <Animated.View pointerEvents="none" style={[styles.stormPulse, { opacity: stormOpacity }]} />
 
+          {/* Storm lightning flash */}
+          <Animated.View pointerEvents="none" style={[styles.lightningFlash, {
+            opacity: lightningAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.30] }),
+          }]} />
+
+          {/* Void shooting stars */}
+          {shootingStars.map(star => (
+            <Animated.View key={star.id} style={[styles.shootingStar, {
+              left: star.x, top: star.y,
+              opacity: star.anim.interpolate({ inputRange: [0, 0.15, 0.75, 1], outputRange: [0, 0.9, 0.6, 0] }),
+              transform: [
+                { translateX: star.anim.interpolate({ inputRange: [0, 1], outputRange: [0, 62] }) },
+                { translateY: star.anim.interpolate({ inputRange: [0, 1], outputRange: [0, 28] }) },
+                { rotate: '24deg' },
+              ],
+            }]} />
+          ))}
+
           {/* Ripples */}
           {ripples.map(r => (
             <Animated.View key={r.id} style={[styles.ripple, {
@@ -989,6 +1044,11 @@ export default function WorldScreen() {
                     backgroundColor: color, shadowColor: color,
                   }]} />
                   <Text style={[styles.entityLabel, { color }]} numberOfLines={1}>{entity.name}</Text>
+                  {entity.generation >= 3 && (
+                    <Text style={[styles.genBadge, { color: entity.generation >= 5 ? '#fbbf24' : '#a78bfa' }]}>
+                      G{entity.generation}
+                    </Text>
+                  )}
                   <View style={styles.energyTrack}>
                     <View style={[styles.energyFill, {
                       width: `${energy}%` as any,
@@ -1275,6 +1335,19 @@ const styles = StyleSheet.create({
   },
   griefMark:  { position: 'absolute' },
   griefEmoji: { fontSize: 14 },
+  lightningFlash: {
+    position: 'absolute', left: ZW * 3, top: 0, width: ZW, height: H,
+    backgroundColor: '#ffffff',
+  },
+  shootingStar: {
+    position: 'absolute', width: 55, height: 2, borderRadius: 1,
+    backgroundColor: '#ddd6fe',
+    shadowColor: '#a78bfa', shadowOpacity: 0.9, shadowRadius: 6, shadowOffset: { width: 0, height: 0 },
+  },
+  genBadge: {
+    fontSize: 7, fontWeight: '800', marginTop: 1, letterSpacing: 0.3,
+    textShadowColor: '#000', textShadowRadius: 2, textShadowOffset: { width: 0, height: 1 },
+  },
   dawnOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#c084fc' },
   dayOverlay:  { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#60a5fa' },
   duskOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#f97316' },
