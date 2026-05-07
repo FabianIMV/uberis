@@ -1,8 +1,8 @@
 /**
- * World v11 — Void aurora bands, constellation lines, entity energy corona.
- * Colored aurora waves slowly drift across the Void sky. Star pairs are
- * joined by faint constellation threads. Entities glow brighter or dimmer
- * based on their current energy level.
+ * World v12 — Garden ground mist, Storm animated clouds.
+ * Translucent mist strips drift at ground level in the Garden zone.
+ * Dark cloud masses slowly traverse the Storm sky, giving the tempest
+ * a sense of movement and depth.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -120,6 +120,21 @@ const AURORA_BANDS = [
   { y: 112, color: '#0d9488', dur: 10500, phase: 0.33 },
   { y: 152, color: '#4c1d95', dur: 9300,  phase: 0.67 },
   { y: 198, color: '#065f46', dur: 11400, phase: 0.15 },
+]
+
+// Garden ground mist — gentle horizontal strips at ground level
+const MIST_STRIPS = [
+  { offsetY: 12, dur: 11000, phase: 0,    tw: 38 },
+  { offsetY: 28, dur: 15000, phase: 0.35, tw: 26 },
+  { offsetY: 44, dur: 9500,  phase: 0.65, tw: 32 },
+  { offsetY: 58, dur: 17000, phase: 0.2,  tw: 22 },
+]
+
+// Storm animated cloud blobs drifting across sky
+const STORM_CLOUD_DATA = [
+  { y: 40,  h: 30, w: 90,  dur: 21000, phase: 0    },
+  { y: 72,  h: 24, w: 75,  dur: 17000, phase: 0.45 },
+  { y: 104, h: 34, w: 100, dur: 27000, phase: 0.72 },
 ]
 
 const S_RAIN: [number, number][] = [
@@ -386,6 +401,44 @@ export default function WorldScreen() {
       }
       const delay = Math.round(band.phase * band.dur)
       const t = setTimeout(startLoop, delay)
+      return () => { clearTimeout(t); loop?.stop() }
+    })
+    return () => cleanups.forEach(c => c())
+  }, [])
+
+  // ── Garden ground mist ────────────────────────────────────────────────────
+  const mistAnims = useRef(MIST_STRIPS.map(() => new Animated.Value(0))).current
+  useEffect(() => {
+    const cleanups = MIST_STRIPS.map((strip, i) => {
+      const anim = mistAnims[i]
+      anim.setValue(strip.phase)
+      let loop: Animated.CompositeAnimation
+      const startLoop = () => {
+        loop = Animated.loop(
+          Animated.timing(anim, { toValue: 1, duration: strip.dur, useNativeDriver: true })
+        )
+        loop.start()
+      }
+      const t = setTimeout(startLoop, Math.round(strip.phase * strip.dur))
+      return () => { clearTimeout(t); loop?.stop() }
+    })
+    return () => cleanups.forEach(c => c())
+  }, [])
+
+  // ── Storm animated clouds ─────────────────────────────────────────────────
+  const stormCloudAnims = useRef(STORM_CLOUD_DATA.map(() => new Animated.Value(0))).current
+  useEffect(() => {
+    const cleanups = STORM_CLOUD_DATA.map((cloud, i) => {
+      const anim = stormCloudAnims[i]
+      anim.setValue(cloud.phase)
+      let loop: Animated.CompositeAnimation
+      const startLoop = () => {
+        loop = Animated.loop(
+          Animated.timing(anim, { toValue: 1, duration: cloud.dur, useNativeDriver: true })
+        )
+        loop.start()
+      }
+      const t = setTimeout(startLoop, Math.round(cloud.phase * cloud.dur))
       return () => { clearTimeout(t); loop?.stop() }
     })
     return () => cleanups.forEach(c => c())
@@ -1088,6 +1141,23 @@ export default function WorldScreen() {
             }]} />
           ))}
 
+          {/* Garden ground mist */}
+          {MIST_STRIPS.map((strip, i) => (
+            <Animated.View key={`mist${i}`} pointerEvents="none" style={[styles.mistStrip, {
+              top: GND_Y + strip.offsetY,
+              opacity: mistAnims[i].interpolate({
+                inputRange: [0, 0.3, 0.6, 1],
+                outputRange: [0.04, 0.13, 0.05, 0.04],
+              }),
+              transform: [{
+                translateX: mistAnims[i].interpolate({
+                  inputRange: [0, 0.25, 0.5, 0.75, 1],
+                  outputRange: [-strip.tw, strip.tw * 0.6, -strip.tw * 0.3, strip.tw, -strip.tw],
+                }),
+              }],
+            }]} />
+          ))}
+
           {/* Garden pollen */}
           {pollen.map(p => (
             <Animated.View key={p.id} style={[styles.pollen, {
@@ -1097,6 +1167,23 @@ export default function WorldScreen() {
                 { translateY: p.anim.interpolate({ inputRange: [0, 1], outputRange: [0, -32] }) },
                 { translateX: p.anim.interpolate({ inputRange: [0, 0.25, 0.5, 0.75, 1], outputRange: [0, 5, 0, -5, 0] }) },
               ],
+            }]} />
+          ))}
+
+          {/* Storm cloud layer — dark masses drifting through the tempest */}
+          {STORM_CLOUD_DATA.map((cloud, i) => (
+            <Animated.View key={`sc${i}`} pointerEvents="none" style={[styles.stormCloud, {
+              top: cloud.y, width: cloud.w, height: cloud.h, borderRadius: cloud.h / 2,
+              opacity: stormCloudAnims[i].interpolate({
+                inputRange: [0, 0.2, 0.5, 0.8, 1],
+                outputRange: [0.5, 0.72, 0.55, 0.68, 0.5],
+              }),
+              transform: [{
+                translateX: stormCloudAnims[i].interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [-(cloud.w + 10), ZW + 10],
+                }),
+              }],
             }]} />
           ))}
 
@@ -1543,6 +1630,8 @@ const styles = StyleSheet.create({
   },
   socialLine: { position: 'absolute', height: 2, borderRadius: 1 },
   auroraBand: { position: 'absolute', left: ZW * 2, width: ZW + 6, height: 8, borderRadius: 4 },
+  mistStrip:  { position: 'absolute', left: -10, width: ZW + 20, height: 14, borderRadius: 7, backgroundColor: '#86efac' },
+  stormCloud: { position: 'absolute', left: ZW * 3, backgroundColor: '#080404' },
   griefMark:  { position: 'absolute' },
   griefEmoji: { fontSize: 14 },
   sleepMark:  { position: 'absolute' },
