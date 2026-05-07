@@ -1,8 +1,8 @@
 /**
- * World v13 — Zone energy halos, entity selection relationship web.
- * Each zone glows with a color and intensity that reflects the average
- * energy of entities living there. Tapping an entity draws lines to all
- * its relationship partners, color-coded by bond type.
+ * World v14 — Archive amber motes, Garden bird silhouettes.
+ * Dusty golden motes rise from the Archive floor like ancient knowledge
+ * taking flight. Tiny bird forms glide silently across the Garden sky,
+ * giving the living world a sense of depth beyond the entities.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -233,6 +233,8 @@ interface Pollen       { id: number; x: number; baseY: number; anim: Animated.Va
 interface ShootingStar { id: number; x: number; y: number; anim: Animated.Value }
 interface SleepMark    { id: number; x: number; y: number; anim: Animated.Value }
 interface SocialLine   { key: string; x1: number; y1: number; x2: number; y2: number; color: string }
+interface Mote         { id: number; x: number; baseY: number; anim: Animated.Value }
+interface Bird         { id: number; y: number; anim: Animated.Value }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function WorldScreen() {
@@ -517,6 +519,41 @@ export default function WorldScreen() {
     }
     compute()
     const id = setInterval(compute, 3000)
+    return () => clearInterval(id)
+  }, [])
+
+  // ── Archive amber motes ───────────────────────────────────────────────────
+  const [motes, setMotes] = useState<Mote[]>([])
+  const nextMoteId = useRef(0)
+  useEffect(() => {
+    const spawn = () => {
+      const x     = 180 + Math.random() * 162
+      const baseY = GND_Y + Math.random() * (GND_H - 10)
+      const anim  = new Animated.Value(0)
+      const mid   = nextMoteId.current++
+      setMotes(prev => [...prev.slice(-10), { id: mid, x, baseY, anim }])
+      Animated.timing(anim, { toValue: 1, duration: 5000 + Math.random() * 4000, useNativeDriver: true })
+        .start(() => setMotes(prev => prev.filter(m => m.id !== mid)))
+    }
+    spawn()
+    const id = setInterval(spawn, 900)
+    return () => clearInterval(id)
+  }, [])
+
+  // ── Garden bird silhouettes ───────────────────────────────────────────────
+  const [birds, setBirds] = useState<Bird[]>([])
+  const nextBirdId = useRef(0)
+  useEffect(() => {
+    const spawn = () => {
+      const y    = 50 + Math.random() * 230
+      const anim = new Animated.Value(0)
+      const bid  = nextBirdId.current++
+      setBirds(prev => [...prev.slice(-4), { id: bid, y, anim }])
+      Animated.timing(anim, { toValue: 1, duration: 14000 + Math.random() * 12000, useNativeDriver: true })
+        .start(() => setBirds(prev => prev.filter(b => b.id !== bid)))
+    }
+    spawn()
+    const id = setInterval(spawn, 7000)
     return () => clearInterval(id)
   }, [])
 
@@ -1181,6 +1218,17 @@ export default function WorldScreen() {
             }]} />
           ))}
 
+          {/* Garden bird silhouettes */}
+          {birds.map(bird => (
+            <Animated.View key={bird.id} pointerEvents="none" style={[styles.birdWrap, {
+              top: bird.y,
+              opacity: bird.anim.interpolate({ inputRange: [0, 0.08, 0.88, 1], outputRange: [0, 0.38, 0.3, 0] }),
+              transform: [{ translateX: bird.anim.interpolate({ inputRange: [0, 1], outputRange: [-20, ZW + 20] }) }],
+            }]}>
+              <Text style={styles.birdGlyph}>^ ^</Text>
+            </Animated.View>
+          ))}
+
           {/* Garden pollen */}
           {pollen.map(p => (
             <Animated.View key={p.id} style={[styles.pollen, {
@@ -1189,6 +1237,18 @@ export default function WorldScreen() {
               transform: [
                 { translateY: p.anim.interpolate({ inputRange: [0, 1], outputRange: [0, -32] }) },
                 { translateX: p.anim.interpolate({ inputRange: [0, 0.25, 0.5, 0.75, 1], outputRange: [0, 5, 0, -5, 0] }) },
+              ],
+            }]} />
+          ))}
+
+          {/* Archive amber motes */}
+          {motes.map(m => (
+            <Animated.View key={m.id} style={[styles.mote, {
+              left: m.x, top: m.baseY,
+              opacity: m.anim.interpolate({ inputRange: [0, 0.1, 0.75, 1], outputRange: [0, 0.65, 0.4, 0] }),
+              transform: [
+                { translateY: m.anim.interpolate({ inputRange: [0, 1], outputRange: [0, -55] }) },
+                { translateX: m.anim.interpolate({ inputRange: [0, 0.33, 0.66, 1], outputRange: [0, 7, -5, 2] }) },
               ],
             }]} />
           ))}
@@ -1688,6 +1748,13 @@ const styles = StyleSheet.create({
   mistStrip:  { position: 'absolute', left: -10, width: ZW + 20, height: 14, borderRadius: 7, backgroundColor: '#86efac' },
   stormCloud: { position: 'absolute', left: ZW * 3, backgroundColor: '#080404' },
   zoneHalo:   { position: 'absolute', top: 0, width: ZW, height: H },
+  birdWrap:   { position: 'absolute', left: 0 },
+  birdGlyph:  { fontSize: 6, color: '#64748b', letterSpacing: 3, fontWeight: '300' },
+  mote: {
+    position: 'absolute', width: 2.5, height: 2.5, borderRadius: 1.5,
+    backgroundColor: '#fbbf24',
+    shadowColor: '#f59e0b', shadowOpacity: 0.8, shadowRadius: 3, shadowOffset: { width: 0, height: 0 },
+  },
   selectionLine: {
     position: 'absolute', height: 4, borderRadius: 2,
     shadowOpacity: 0.9, shadowRadius: 8, shadowOffset: { width: 0, height: 0 },
