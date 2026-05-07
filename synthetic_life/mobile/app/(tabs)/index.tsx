@@ -1,8 +1,8 @@
 /**
- * World v18 — Void nebula wisps, world stats panel.
- * Diagonal glowing streaks drift through the Void sky, adding depth to
- * the cosmic zone. A stats panel (📊 button) surfaces key simulation
- * metrics: oldest entity, most connected, dominant zone, prophecy.
+ * World v19 — Entity desire whispers, Void portal bursts.
+ * Idle entities periodically exhale their current_desire as a ghostly
+ * rising wisp. The Void portal ellipses flash a bright burst every
+ * 15-30 seconds, making the zone feel alive and unpredictable.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -236,6 +236,7 @@ interface SocialLine   { key: string; x1: number; y1: number; x2: number; y2: nu
 interface Mote         { id: number; x: number; baseY: number; anim: Animated.Value }
 interface Bird         { id: number; y: number; anim: Animated.Value }
 interface NebWisp      { id: number; x: number; y: number; color: string; len: number; angle: number; anim: Animated.Value }
+interface DesireWisp   { id: number; x: number; y: number; text: string; anim: Animated.Value }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function WorldScreen() {
@@ -267,6 +268,9 @@ export default function WorldScreen() {
   const [showStats, setShowStats] = useState(false)
   const [nebWisps, setNebWisps] = useState<NebWisp[]>([])
   const nextNebId = useRef(0)
+  const [desireWisps, setDesireWisps] = useState<DesireWisp[]>([])
+  const nextDesireId = useRef(0)
+  const portalBurstAnim = useRef(new Animated.Value(0)).current
 
   // Entity positions
   const posRef = useRef<Record<number, { x: Animated.Value; y: Animated.Value }>>({})
@@ -613,6 +617,44 @@ export default function WorldScreen() {
       t = setTimeout(spawn, 3500 + Math.random() * 3000)
     }
     t = setTimeout(spawn, 1500)
+    return () => clearTimeout(t)
+  }, [])
+
+  // ── Entity desire whispers ────────────────────────────────────────────────
+  useEffect(() => {
+    const check = () => {
+      const candidates = entitiesRef.current.filter(e => !!(e as any).current_desire)
+      if (candidates.length === 0) return
+      const entity = candidates[Math.floor(Math.random() * candidates.length)]
+      const pos = posRef.current[entity.id]
+      if (!pos) return
+      const x    = (pos.x as any)._value as number
+      const y    = (pos.y as any)._value as number
+      const text = String((entity as any).current_desire ?? '').slice(0, 70)
+      const anim = new Animated.Value(0)
+      const did  = nextDesireId.current++
+      setDesireWisps(prev => [...prev.slice(-4), { id: did, x, y, text, anim }])
+      Animated.sequence([
+        Animated.timing(anim, { toValue: 1, duration: 500, useNativeDriver: true }),
+        Animated.delay(2800),
+        Animated.timing(anim, { toValue: 0, duration: 900, useNativeDriver: true }),
+      ]).start(() => setDesireWisps(prev => prev.filter(d => d.id !== did)))
+    }
+    const id = setInterval(check, 6500)
+    return () => clearInterval(id)
+  }, [])
+
+  // ── Void portal burst ─────────────────────────────────────────────────────
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout>
+    const burst = () => {
+      Animated.sequence([
+        Animated.timing(portalBurstAnim, { toValue: 1, duration: 180,  useNativeDriver: true }),
+        Animated.timing(portalBurstAnim, { toValue: 0, duration: 900,  useNativeDriver: true }),
+      ]).start()
+      t = setTimeout(burst, 15000 + Math.random() * 18000)
+    }
+    t = setTimeout(burst, 8000)
     return () => clearTimeout(t)
   }, [])
 
@@ -1442,6 +1484,10 @@ export default function WorldScreen() {
           <Animated.View pointerEvents="none" style={[styles.vortexInner, {
             transform: [{ rotate: vortexAnim.interpolate({ inputRange: [0,1], outputRange: ['0deg','-540deg'] }) }],
           }]} />
+          <Animated.View pointerEvents="none" style={[styles.portalBurst, {
+            opacity: portalBurstAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.55] }),
+            transform: [{ scale: portalBurstAnim.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1.6] }) }],
+          }]} />
 
           {/* Archive shimmer */}
           <Animated.View pointerEvents="none" style={[styles.archiveShimmer, {
@@ -1623,6 +1669,17 @@ export default function WorldScreen() {
               transform: [{ translateY: g.anim.interpolate({ inputRange: [0, 1], outputRange: [0, -52] }) }],
             }]}>
               <Text style={styles.griefEmoji}>💔</Text>
+            </Animated.View>
+          ))}
+
+          {/* Desire whispers */}
+          {desireWisps.map(d => (
+            <Animated.View key={d.id} pointerEvents="none" style={[styles.desireWisp, {
+              left: d.x - 50, top: d.y - 46,
+              opacity: d.anim.interpolate({ inputRange: [0, 0.12, 0.75, 1], outputRange: [0, 0.75, 0.45, 0] }),
+              transform: [{ translateY: d.anim.interpolate({ inputRange: [0, 1], outputRange: [0, -42] }) }],
+            }]}>
+              <Text style={styles.desireWispTxt} numberOfLines={2}>{d.text}</Text>
             </Animated.View>
           ))}
 
@@ -2121,4 +2178,20 @@ const styles = StyleSheet.create({
   statsRow:         { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 },
   statsLabel:       { fontSize: 10, color: COLORS.textMuted, flex: 1 },
   statsVal:         { fontSize: 10, fontWeight: '700', color: COLORS.text, maxWidth: 115, textAlign: 'right' },
+  portalBurst: {
+    position: 'absolute',
+    left: 438 - 45, top: 462 - 32,
+    width: 90, height: 64, borderRadius: 45,
+    backgroundColor: '#7c3aed',
+    shadowColor: '#a78bfa', shadowOpacity: 1, shadowRadius: 18, shadowOffset: { width: 0, height: 0 },
+  },
+  desireWisp: {
+    position: 'absolute', maxWidth: 100,
+    backgroundColor: '#020b18b0',
+    borderRadius: 6, paddingHorizontal: 5, paddingVertical: 3,
+    borderWidth: 1, borderColor: '#4c1d9555',
+  },
+  desireWispTxt: {
+    fontSize: 7.5, color: '#a78bfa', fontStyle: 'italic', lineHeight: 11, textAlign: 'center',
+  },
 })
