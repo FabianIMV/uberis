@@ -1,8 +1,8 @@
 /**
- * World v14 — Archive amber motes, Garden bird silhouettes.
- * Dusty golden motes rise from the Archive floor like ancient knowledge
- * taking flight. Tiny bird forms glide silently across the Garden sky,
- * giving the living world a sense of depth beyond the entities.
+ * World v15 — Entity hunger pulses, zone border light pillars.
+ * Hungry entities (energy < 35%) flash a red warning dot so resource
+ * crises are visible at a glance. Soft luminous pillars mark zone
+ * boundaries, breathing gently with the world's pulse.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -313,6 +313,19 @@ export default function WorldScreen() {
       Animated.sequence([
         Animated.timing(pulse, { toValue: 1, duration: 2200, useNativeDriver: true }),
         Animated.timing(pulse, { toValue: 0, duration: 2200, useNativeDriver: true }),
+      ])
+    )
+    loop.start()
+    return () => loop.stop()
+  }, [])
+
+  // ── Hunger warning pulse ──────────────────────────────────────────────────
+  const hungerPulse = useRef(new Animated.Value(0)).current
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(hungerPulse, { toValue: 1, duration: 650, useNativeDriver: true }),
+        Animated.timing(hungerPulse, { toValue: 0, duration: 650, useNativeDriver: true }),
       ])
     )
     loop.start()
@@ -1171,6 +1184,14 @@ export default function WorldScreen() {
             )
           })}
 
+          {/* Zone border light pillars */}
+          {[ZW, ZW * 2, ZW * 3].map((x, i) => (
+            <Animated.View key={`pillar${i}`} pointerEvents="none" style={[styles.zonePillar, {
+              left: x - 2,
+              opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.03, 0.10] }),
+            }]} />
+          ))}
+
           {/* Zone labels */}
           {[
             { zone: 'Garden',  left: ZW * 0 + ZW/2 - 28, top: 16 },
@@ -1446,6 +1467,12 @@ export default function WorldScreen() {
                     <Text style={[styles.genBadge, { color: entity.generation >= 5 ? '#fbbf24' : '#a78bfa' }]}>
                       G{entity.generation}
                     </Text>
+                  )}
+                  {energy < 35 && (
+                    <Animated.View style={[styles.hungerDot, {
+                      opacity: hungerPulse.interpolate({ inputRange: [0, 1], outputRange: [0.25, 0.95] }),
+                      transform: [{ scale: hungerPulse.interpolate({ inputRange: [0, 1], outputRange: [0.8, 1.2] }) }],
+                    }]} />
                   )}
                   <View style={styles.energyTrack}>
                     <View style={[styles.energyFill, {
@@ -1748,6 +1775,12 @@ const styles = StyleSheet.create({
   mistStrip:  { position: 'absolute', left: -10, width: ZW + 20, height: 14, borderRadius: 7, backgroundColor: '#86efac' },
   stormCloud: { position: 'absolute', left: ZW * 3, backgroundColor: '#080404' },
   zoneHalo:   { position: 'absolute', top: 0, width: ZW, height: H },
+  zonePillar: { position: 'absolute', top: 0, width: 4, height: H, backgroundColor: '#ddd6fe' },
+  hungerDot:  {
+    position: 'absolute', width: 5, height: 5, borderRadius: 2.5, backgroundColor: '#ef4444',
+    top: -22, left: -2.5,
+    shadowColor: '#ef4444', shadowOpacity: 0.9, shadowRadius: 5, shadowOffset: { width: 0, height: 0 },
+  },
   birdWrap:   { position: 'absolute', left: 0 },
   birdGlyph:  { fontSize: 6, color: '#64748b', letterSpacing: 3, fontWeight: '300' },
   mote: {
