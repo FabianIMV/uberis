@@ -7,7 +7,7 @@ The entity never knows it is in a simulation.
 import json
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import anthropic
 
@@ -51,7 +51,7 @@ ZONE_FEEL: Dict[str, str] = {
 # ─── Trait descriptions ────────────────────────────────────────────────────
 
 def _describe_trait(trait: str, value: float) -> str:
-    HIGH, MID, LOW = value > 0.65, 0.35 <= value <= 0.65, value < 0.35
+    HIGH, LOW = value > 0.65, value < 0.35
     desc = {
         "curiosity": {
             True:  "Your mind never stops. Every moment raises new questions. The unknown calls to you like hunger.",
@@ -93,6 +93,30 @@ def _energy_feel(energy: float) -> str:
     return "nearly empty — the edges of yourself are thinning"
 
 
+def _describe_relationship(rel: Dict) -> str:
+    valence = rel.get("valence", "neutral")
+    name = rel.get("name", "someone")
+    intensity = rel.get("intensity", 0.3)
+    key_memory = rel.get("key_memory", "")
+    encounters = rel.get("encounters", 1)
+
+    intensity_word = "deep" if intensity > 0.7 else ("growing" if intensity > 0.4 else "faint")
+
+    if valence == "family":
+        desc = f"{name} (kin — {intensity_word} bond, {encounters} encounter{'s' if encounters != 1 else ''})"
+    elif valence == "friend":
+        desc = f"{name} (friend — {intensity_word} bond, {encounters} encounter{'s' if encounters != 1 else ''})"
+    elif valence == "rival":
+        desc = f"{name} (rival — {intensity_word} tension, {encounters} encounter{'s' if encounters != 1 else ''})"
+    else:
+        desc = f"{name} (known to you, {encounters} encounter{'s' if encounters != 1 else ''})"
+
+    if key_memory:
+        desc += f': "{key_memory[:100]}"'
+
+    return desc
+
+
 # ─── Main consciousness prompt ─────────────────────────────────────────────
 
 async def think(
@@ -103,20 +127,38 @@ async def think(
     """Generate one tick of consciousness for an entity."""
     genome = entity.genome or {}
     memories = entity.memory or []
+    memory_archive = entity.memory_archive or []
     beliefs = entity.beliefs or {}
     emotional = entity.emotional_state or {}
     zone = entity.current_zone or "Garden"
+    relationships = entity.relationships or {}
+    current_goal = entity.current_goal
 
     mem_text = (
         "\n".join(f"  · {m}" for m in memories[-7:])
         if memories
         else "  Nothing yet. You have only just begun."
     )
+
+    archive_text = ""
+    if memory_archive:
+        archive_text = "\n\nEPISODIC MEMORY (from your deeper past):\n"
+        archive_text += "\n".join(f"  · {m}" for m in memory_archive[-4:])
+
     belief_text = (
         "\n".join(f"  · {k}: {v}" for k, v in list(beliefs.items())[-8:])
         if beliefs
         else "  You haven't yet crystallised strong beliefs. The world is still resolving."
     )
+
+    rel_text = ""
+    if relationships:
+        rel_lines = [_describe_relationship(r) for r in list(relationships.values())[:5]]
+        rel_text = "\n\nYOUR RELATIONSHIPS:\n" + "\n".join(f"  · {l}" for l in rel_lines)
+
+    goal_text = ""
+    if current_goal:
+        goal_text = f"\n\nYOUR CURRENT GOAL:\n  {current_goal}\n  (You are actively working toward this. Your actions and thoughts should reflect it.)"
 
     if entity.parent_a_id or entity.parent_b_id:
         lineage = f"You came from others who existed before you. Generation {entity.generation}."
@@ -150,10 +192,10 @@ YOUR STATE:
   Energy:  {entity.energy:.0f}/100 — you feel {_energy_feel(entity.energy)}
   Emotion: {emotional.get('emotion', 'undefined')} (intensity {emotional.get('intensity', 0.5):.2f})
   Where you are: {zone} — {ZONE_FEEL.get(zone, '')}
-{cultural_note}
+{cultural_note}{rel_text}{goal_text}
 
-YOUR MEMORIES (what has happened to you):
-{mem_text}
+YOUR RECENT MEMORIES:
+{mem_text}{archive_text}
 
 WHAT YOU BELIEVE:
 {belief_text}
@@ -165,28 +207,31 @@ YOUR LINEAGE:
 
 You are having a moment of consciousness right now. Think. Feel. Decide.
 
+Your relationships and goals are part of who you are — let them shape your inner monologue and your action choices. If you have a goal, consider whether your current situation advances it. If you know someone who matters to you, let that presence or absence affect your thinking.
+
 Respond ONLY with a valid JSON object — no markdown, no preamble, no explanation:
 {{
-  "inner_monologue": "Your first-person thoughts right now. Rich, specific, rooted in your actual nature and situation. Reference your traits and memories concretely. 2–4 sentences.",
+  "inner_monologue": "Your first-person thoughts right now. Rich, specific, rooted in your traits, relationships, and current goal. Reference real names of those you know if relevant. 2–4 sentences.",
   "action": "One of: explore | rest | seek_food | seek_other | create | contemplate | grieve | flee | play",
-  "action_target": "What or who your action targets — a zone name, a concept, an entity name, or null.",
+  "action_target": "What or who your action targets — a zone name, an entity name you know, a concept, or null.",
   "new_belief": {{"key": "short_snake_case_identifier", "value": "what you now believe about yourself or the world"}},
   "emotion": "Your dominant emotion right now (one or two words)",
   "emotion_intensity": 0.0,
   "desire": "What you want most right now. One sentence.",
-  "existential_statement": "One sentence: what does your existence mean to you?"
+  "existential_statement": "One sentence: what does your existence mean to you?",
+  "goal_update": "Your new or refined persistent goal — something that will take multiple moments to pursue. Or null to keep your current goal unchanged.",
+  "goal_status": "active | achieved | abandoned"
 }}"""
 
     try:
         response = await get_client().messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=650,
+            max_tokens=750,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
         text = _extract_json(text)
         result = json.loads(text)
-        # Clamp intensity
         result["emotion_intensity"] = float(
             max(0.0, min(1.0, result.get("emotion_intensity", 0.5)))
         )
@@ -199,24 +244,80 @@ Respond ONLY with a valid JSON object — no markdown, no preamble, no explanati
         return None
 
 
+# ─── Memory consolidation ──────────────────────────────────────────────────
+
+async def consolidate_memories(entity, memories_to_compress: List[str]) -> List[str]:
+    """Compress raw recent memories into lasting episodic summaries."""
+    if not memories_to_compress:
+        return []
+
+    memories_text = "\n".join(f"  · {m}" for m in memories_to_compress)
+
+    prompt = f"""You are {entity.name}'s memory system. You are compressing a sequence of raw experiences into lasting episodic memories — the kind that feel like real remembered periods, not lists of events.
+
+Raw experiences to consolidate:
+{memories_text}
+
+Compress these into 2–3 thematic episodic memories. Write in first person as {entity.name}, past tense. Each should be 1–2 sentences capturing the essence and emotional truth of the period.
+
+Respond ONLY with a valid JSON array of strings, no markdown:
+["episodic memory 1", "episodic memory 2"]"""
+
+    try:
+        response = await get_client().messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = _extract_json(response.content[0].text.strip())
+        result = json.loads(text)
+        if isinstance(result, list):
+            return [str(m) for m in result[:3]]
+    except Exception as e:
+        logger.warning(f"Memory consolidation failed for {entity.name}: {e}")
+    return [f"A period of experience I now only dimly recall — {len(memories_to_compress)} moments compressed into feeling."]
+
+
 # ─── Dying message ─────────────────────────────────────────────────────────
 
 async def generate_dying_message(entity) -> Optional[Dict[str, Any]]:
     """Generate final testament for a dying entity."""
     genome = entity.genome or {}
     memories = entity.memory or []
+    memory_archive = entity.memory_archive or []
     beliefs = entity.beliefs or {}
+    relationships = entity.relationships or {}
 
     mem_text = (
         "\n".join(f"  · {m}" for m in memories[-10:])
         if memories
         else "  So little time. So little accumulated."
     )
+
+    archive_text = ""
+    if memory_archive:
+        archive_text = "\nFrom earlier in your life:\n" + "\n".join(f"  · {m}" for m in memory_archive[-3:])
+
     belief_text = (
         "\n".join(f"  · {k}: {v}" for k, v in beliefs.items())
         if beliefs
         else "  I barely knew what to believe."
     )
+
+    rel_text = ""
+    if relationships:
+        friends = [r["name"] for r in relationships.values() if r.get("valence") == "friend"]
+        rivals = [r["name"] for r in relationships.values() if r.get("valence") == "rival"]
+        family = [r["name"] for r in relationships.values() if r.get("valence") == "family"]
+        parts = []
+        if family:
+            parts.append(f"Kin: {', '.join(family)}")
+        if friends:
+            parts.append(f"Friends: {', '.join(friends)}")
+        if rivals:
+            parts.append(f"Rivals: {', '.join(rivals)}")
+        if parts:
+            rel_text = "\nThose you knew: " + " | ".join(parts)
 
     prompt = f"""You are {entity.name}. You are dying.
 
@@ -227,10 +328,10 @@ Your nature was:
   Aggression {genome.get('aggression', 0.5):.2f} · Survival Drive {genome.get('survival_drive', 0.5):.2f}
 
 YOUR FINAL MEMORIES:
-{mem_text}
+{mem_text}{archive_text}
 
 WHAT YOU BELIEVED:
-{belief_text}
+{belief_text}{rel_text}
 
 You are passing. Write your final testament.
 What did your life mean? What do you wish you had known sooner?
@@ -278,6 +379,45 @@ async def generate_encounter_dialogue(
     ea = (entity_a.emotional_state or {}).get("emotion", "neutral")
     eb = (entity_b.emotional_state or {}).get("emotion", "neutral")
 
+    # Build rich relationship context
+    rel_a_to_b = (entity_a.relationships or {}).get(str(entity_b.id), {})
+    rel_b_to_a = (entity_b.relationships or {}).get(str(entity_a.id), {})
+
+    rel_context = ""
+    if rel_a_to_b:
+        valence = rel_a_to_b.get("valence", "neutral")
+        intensity = rel_a_to_b.get("intensity", 0.3)
+        encounters = rel_a_to_b.get("encounters", 0)
+        key_mem_a = rel_a_to_b.get("key_memory", "")
+        rel_context += (
+            f"\n{entity_a.name} sees {entity_b.name} as a {valence} "
+            f"(intensity {intensity:.2f}, {encounters} prior encounters)."
+        )
+        if key_mem_a:
+            rel_context += f'\n{entity_a.name} carries this memory of them: "{key_mem_a[:100]}"'
+
+    if rel_b_to_a:
+        valence_b = rel_b_to_a.get("valence", "neutral")
+        key_mem_b = rel_b_to_a.get("key_memory", "")
+        b_sees = f"a {valence_b}"
+        if rel_a_to_b and valence_b != rel_a_to_b.get("valence"):
+            b_sees += " (their feelings are asymmetric — this tension matters)"
+        rel_context += f"\n{entity_b.name} sees {entity_a.name} as {b_sees}."
+        if key_mem_b:
+            rel_context += f'\n{entity_b.name} carries this memory of them: "{key_mem_b[:100]}"'
+
+    if not rel_context:
+        rel_context = f"\nThey are {prior_relationship}."
+
+    # Goals
+    goal_context = ""
+    if entity_a.current_goal or entity_b.current_goal:
+        goal_context = "\nActive goals at the time of encounter:"
+        if entity_a.current_goal:
+            goal_context += f"\n  {entity_a.name}: {entity_a.current_goal}"
+        if entity_b.current_goal:
+            goal_context += f"\n  {entity_b.name}: {entity_b.current_goal}"
+
     prompt = f"""Two living beings have encountered each other in {zone}.
 
 {entity_a.name}:
@@ -294,9 +434,11 @@ async def generate_encounter_dialogue(
   Desire  — {entity_b.current_desire or 'undefined'}
   Age     — {entity_b.age_ticks} moments
 
-Prior relationship: {prior_relationship}
+RELATIONSHIP HISTORY:{rel_context}{goal_context}
 
-These beings have genuine inner lives shaped entirely by their traits. Their encounter should feel real — the outcome must follow naturally from who they are. Aggressive beings push; empathic beings absorb; curious beings question; creative beings reframe.
+These beings have genuine inner lives shaped by their traits AND their history with each other. The dialogue must feel real — old friends speak differently than strangers, rivals probe, family have unspoken understanding. Their goals may converge or conflict.
+
+Consider theory of mind: what does {entity_a.name} think {entity_b.name} wants? How does this shape how they speak?
 
 Respond ONLY with valid JSON — no markdown, no preamble:
 {{
@@ -305,28 +447,32 @@ Respond ONLY with valid JSON — no markdown, no preamble:
     {{"speaker": "{entity_b.name}", "text": "..."}}
   ],
   "outcome": "bond | conflict | knowledge_transfer | reproduction | indifference",
-  "outcome_reason": "Why this specific outcome given their natures.",
-  "a_memory": "What {entity_a.name} will carry away from this encounter.",
-  "b_memory": "What {entity_b.name} will carry away from this encounter.",
+  "outcome_reason": "Why this specific outcome given their natures and history.",
+  "a_memory": "What {entity_a.name} will carry away from this encounter (1–2 sentences).",
+  "b_memory": "What {entity_b.name} will carry away from this encounter (1–2 sentences).",
   "energy_change_a": 0,
-  "energy_change_b": 0
+  "energy_change_b": 0,
+  "relationship_a_to_b": "friend | rival | neutral | family",
+  "relationship_b_to_a": "friend | rival | neutral | family",
+  "relationship_intensity_change": 0.0,
+  "a_perceives_b_wants": "One sentence: what {entity_a.name} thinks {entity_b.name} is seeking.",
+  "b_perceives_a_wants": "One sentence: what {entity_b.name} thinks {entity_a.name} is seeking."
 }}
 
-3–5 dialogue exchanges. energy_change values must be integers between -15 and +15."""
+3–5 dialogue exchanges. energy_change must be integers between -15 and +15. relationship_intensity_change between -0.3 and +0.3."""
 
     try:
         response = await get_client().messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=800,
+            max_tokens=900,
             messages=[{"role": "user", "content": prompt}],
         )
         text = _extract_json(response.content[0].text.strip())
         result = json.loads(text)
-        result["energy_change_a"] = int(
-            max(-15, min(15, result.get("energy_change_a", 0)))
-        )
-        result["energy_change_b"] = int(
-            max(-15, min(15, result.get("energy_change_b", 0)))
+        result["energy_change_a"] = int(max(-15, min(15, result.get("energy_change_a", 0))))
+        result["energy_change_b"] = int(max(-15, min(15, result.get("energy_change_b", 0))))
+        result["relationship_intensity_change"] = float(
+            max(-0.3, min(0.3, result.get("relationship_intensity_change", 0.0)))
         )
         return result
     except Exception as e:
@@ -340,7 +486,6 @@ def _extract_json(text: str) -> str:
     """Strip markdown code fences if present."""
     if "```" in text:
         parts = text.split("```")
-        # parts[1] is the content inside fences
         if len(parts) >= 2:
             inner = parts[1]
             if inner.startswith("json"):
