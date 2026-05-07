@@ -1,9 +1,9 @@
 /**
- * World v24 — Death location markers, era display in header.
- * When an entity dies, a dark · dot is stamped at that location and
- * lingers for 12 seconds — a scar on the world. The header now shows
- * the current Era (every 50 ticks = new era) giving the simulation a
- * sense of historical progression.
+ * World v25 — Proximity bond hearts, world event history log.
+ * When two entities with a family/friend bond are close on screen,
+ * a tiny heart icon appears between them. The stats panel gains a
+ * scrollable event history showing the last 5 world events with
+ * timestamps and icons — a chronicle of the simulation's story.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -251,6 +251,7 @@ interface DesireWisp   { id: number; x: number; y: number; text: string; anim: A
 interface TrailEcho    { id: number; x: number; y: number; color: string; anim: Animated.Value }
 interface BirthStamp   { id: number; x: number; y: number; color: string; anim: Animated.Value }
 interface DeathMark    { id: number; x: number; y: number; anim: Animated.Value }
+interface BondHeart    { key: string; x: number; y: number; color: string; anim: Animated.Value }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function WorldScreen() {
@@ -288,6 +289,8 @@ export default function WorldScreen() {
   const nextStampId = useRef(0)
   const [deathMarks, setDeathMarks] = useState<DeathMark[]>([])
   const nextDeathMarkId = useRef(0)
+  const [bondHearts, setBondHearts] = useState<BondHeart[]>([])
+  const [eventHistory, setEventHistory] = useState<Array<{ icon: string; text: string; tick: number }>>([])  
   const portalBurstAnim = useRef(new Animated.Value(0)).current
   const [trailEchoes, setTrailEchoes] = useState<TrailEcho[]>([])
   const nextTrailId = useRef(0)
@@ -352,6 +355,8 @@ export default function WorldScreen() {
       Animated.delay(3500),
       Animated.timing(overlayAnim, { toValue: 0, duration: 1000, useNativeDriver: true }),
     ]).start(() => setWorldEventText(null))
+    // Add to event history
+    setEventHistory(prev => [...prev.slice(-4), { icon: '🌍', text: text.slice(0, 55), tick: worldState.current_tick }])
   }, [liveEvents])
 
   // ── Pulse glow ────────────────────────────────────────────────────────────
@@ -628,6 +633,46 @@ export default function WorldScreen() {
     return () => clearInterval(id)
   }, [])
 
+  // ── Proximity bond hearts ─────────────────────────────────────────────────
+  useEffect(() => {
+    const scan = () => {
+      const hearts: BondHeart[] = []
+      const seen = new Set<string>()
+      for (const entity of entitiesRef.current) {
+        const rels = (entity as any).relationships ?? {}
+        for (const [name, rel] of Object.entries(rels)) {
+          const valence = (rel as any).valence
+          if (valence !== 'friend' && valence !== 'family') continue
+          const target = entitiesRef.current.find(e => e.name === name)
+          if (!target) continue
+          const pairKey = [entity.id, target.id].sort((a, b) => a - b).join('-h')
+          if (seen.has(pairKey)) continue
+          seen.add(pairKey)
+          const posA = posRef.current[entity.id]
+          const posB = posRef.current[target.id]
+          if (!posA || !posB) continue
+          const ax = (posA.x as any)._value as number
+          const ay = (posA.y as any)._value as number
+          const bx = (posB.x as any)._value as number
+          const by = (posB.y as any)._value as number
+          const dist = Math.sqrt((ax - bx) ** 2 + (ay - by) ** 2)
+          if (dist > 90) continue  // only show when close
+          const color = valence === 'family' ? '#a78bfa' : '#34d399'
+          const existingHeart = bondHearts.find(h => h.key === pairKey)
+          const anim = existingHeart?.anim ?? new Animated.Value(0)
+          if (!existingHeart) {
+            Animated.timing(anim, { toValue: 1, duration: 600, useNativeDriver: true }).start()
+          }
+          hearts.push({ key: pairKey, x: (ax + bx) / 2, y: Math.min(ay, by) - 14, color, anim })
+        }
+      }
+      setBondHearts(hearts)
+    }
+    scan()
+    const id = setInterval(scan, 4000)
+    return () => clearInterval(id)
+  }, [])
+
   // ── Archive amber motes ───────────────────────────────────────────────────
   const [motes, setMotes] = useState<Mote[]>([])
   const nextMoteId = useRef(0)
@@ -835,6 +880,7 @@ export default function WorldScreen() {
     const birth = liveEvents.find(ev => ev.type === 'entity_born' || ev.type === 'birth')
     if (!birth || birth.id === lastBirthRef.current) return
     lastBirthRef.current = birth.id
+    setEventHistory(prev => [...prev.slice(-4), { icon: '✨', text: `${(birth as any).name ?? '?'} nació`, tick: worldState.current_tick }])
     const zone   = String((birth as any).zone ?? (birth as any).current_zone ?? 'Garden')
     const region = REGION[zone] ?? REGION.Garden
     const cx     = region.x + 20 + Math.random() * (region.w - 40)
@@ -871,6 +917,7 @@ export default function WorldScreen() {
     const death = liveEvents.find(ev => ev.type === 'entity_died' || ev.type === 'death')
     if (!death || death.id === lastDeathRef.current) return
     lastDeathRef.current = death.id
+    setEventHistory(prev => [...prev.slice(-4), { icon: '🌑', text: `${(death as any).name ?? '?'} partió`, tick: worldState.current_tick }])
     const entity = entitiesRef.current.find(e => e.name === (death as any).name)
     let cx: number, cy: number
     if (entity) {
@@ -1629,6 +1676,17 @@ export default function WorldScreen() {
             )
           })}
 
+          {/* Proximity bond hearts */}
+          {bondHearts.map(h => (
+            <Animated.View key={h.key} pointerEvents="none" style={{
+              position: 'absolute', left: h.x - 8, top: h.y,
+              opacity: h.anim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.75] }),
+              transform: [{ scale: h.anim.interpolate({ inputRange: [0, 1], outputRange: [0.5, 1] }) }],
+            }}>
+              <Text style={{ fontSize: 12, color: h.color }}>♥</Text>
+            </Animated.View>
+          ))}
+
           {/* Social web — ambient relationship lines */}
           {socialLines.map(line => {
             const dx  = line.x2 - line.x1
@@ -2039,6 +2097,16 @@ export default function WorldScreen() {
             </View>
           )}
           <Text style={[styles.prophecyText, { marginTop: 8, opacity: 0.7 }]}>✦ {prophecy}</Text>
+          {eventHistory.length > 0 && (
+            <View style={styles.eventHistoryList}>
+              {eventHistory.slice().reverse().map((ev, i) => (
+                <Text key={i} style={styles.eventHistoryItem} numberOfLines={1}>
+                  {ev.icon} {ev.text}
+                  <Text style={styles.eventHistoryTick}> t{ev.tick}</Text>
+                </Text>
+              ))}
+            </View>
+          )}
         </View>
       )}
 
@@ -2227,6 +2295,9 @@ const styles = StyleSheet.create({
     fontSize: 22, color: '#475569', fontWeight: '700',
     textShadowColor: '#000', textShadowRadius: 4, textShadowOffset: { width: 0, height: 0 },
   },
+  eventHistoryList: { marginTop: 8, borderTopWidth: 1, borderTopColor: '#1e293b', paddingTop: 6 },
+  eventHistoryItem: { fontSize: 9, color: '#94a3b8', marginBottom: 3, fontStyle: 'italic' },
+  eventHistoryTick: { fontSize: 8, color: '#475569' },
   elderRing: {
     position: 'absolute', borderWidth: 1.5, borderColor: '#fbbf24', borderStyle: 'dashed',
     shadowColor: '#fbbf24', shadowOpacity: 0.7, shadowRadius: 6, shadowOffset: { width: 0, height: 0 },
