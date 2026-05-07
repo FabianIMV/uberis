@@ -1,8 +1,8 @@
 /**
- * World v17 — Periodic meteor shower, world health border aura.
- * Every 60-120 seconds a burst of shooting stars crosses the Void sky.
- * The canvas border glows green, amber, or red — an at-a-glance indicator
- * of whether the world is thriving, stressed, or in crisis.
+ * World v18 — Void nebula wisps, world stats panel.
+ * Diagonal glowing streaks drift through the Void sky, adding depth to
+ * the cosmic zone. A stats panel (📊 button) surfaces key simulation
+ * metrics: oldest entity, most connected, dominant zone, prophecy.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -235,6 +235,7 @@ interface SleepMark    { id: number; x: number; y: number; anim: Animated.Value 
 interface SocialLine   { key: string; x1: number; y1: number; x2: number; y2: number; color: string }
 interface Mote         { id: number; x: number; baseY: number; anim: Animated.Value }
 interface Bird         { id: number; y: number; anim: Animated.Value }
+interface NebWisp      { id: number; x: number; y: number; color: string; len: number; angle: number; anim: Animated.Value }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function WorldScreen() {
@@ -263,6 +264,9 @@ export default function WorldScreen() {
   useEffect(() => { selectedBuildRef.current = selectedBuild }, [selectedBuild])
 
   const [popup, setPopup] = useState<Entity | null>(null)
+  const [showStats, setShowStats] = useState(false)
+  const [nebWisps, setNebWisps] = useState<NebWisp[]>([])
+  const nextNebId = useRef(0)
 
   // Entity positions
   const posRef = useRef<Record<number, { x: Animated.Value; y: Animated.Value }>>({})
@@ -589,6 +593,27 @@ export default function WorldScreen() {
     spawn()
     const id = setInterval(spawn, 7000)
     return () => clearInterval(id)
+  }, [])
+
+  // ── Void nebula wisps ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const NCOLORS = ['#7c3aed', '#0d9488', '#4c1d95', '#065f46', '#1e3a8a', '#6d28d9', '#0e7490']
+    let t: ReturnType<typeof setTimeout>
+    const spawn = () => {
+      const x     = 352 + Math.random() * 165
+      const y     = 10  + Math.random() * 300
+      const color = NCOLORS[Math.floor(Math.random() * NCOLORS.length)]
+      const len   = 45  + Math.random() * 65
+      const angle = 18  + Math.random() * 28
+      const anim  = new Animated.Value(0)
+      const nid   = nextNebId.current++
+      setNebWisps(prev => [...prev.slice(-6), { id: nid, x, y, color, len, angle, anim }])
+      Animated.timing(anim, { toValue: 1, duration: 7000 + Math.random() * 6000, useNativeDriver: true })
+        .start(() => setNebWisps(prev => prev.filter(w => w.id !== nid)))
+      t = setTimeout(spawn, 3500 + Math.random() * 3000)
+    }
+    t = setTimeout(spawn, 1500)
+    return () => clearTimeout(t)
   }, [])
 
   // ── Storm rain streams ────────────────────────────────────────────────────
@@ -981,6 +1006,20 @@ export default function WorldScreen() {
     return avg > 60 ? '#22c55e' : avg > 35 ? '#f59e0b' : '#ef4444'
   }, [entities])
 
+  const worldStats = useMemo(() => {
+    if (entities.length === 0) return null
+    const oldest = entities.reduce((best, e) =>
+      (e.age_ticks ?? 0) > (best.age_ticks ?? 0) ? e : best, entities[0])
+    const mostConnected = entities.reduce((best, e) => {
+      const c = Object.keys((e as any).relationships ?? {}).length
+      const b = Object.keys((best as any).relationships ?? {}).length
+      return c > b ? e : best
+    }, entities[0])
+    const totalBirths = (worldState as any).total_births ?? 0
+    const totalDeaths = (worldState as any).total_deaths ?? 0
+    return { oldest, mostConnected, totalBirths, totalDeaths }
+  }, [entities, worldState])
+
   const prophecy = useMemo(() => {
     if (entities.length === 0) return 'El mundo duerme...'
     if (entities.length < 3) return 'El mundo agoniza...'
@@ -1360,6 +1399,25 @@ export default function WorldScreen() {
             }]} />
           ))}
 
+          {/* Void nebula wisps */}
+          {nebWisps.map(w => (
+            <Animated.View key={w.id} pointerEvents="none" style={[styles.nebWisp, {
+              left: w.x, top: w.y,
+              width: w.len,
+              backgroundColor: w.color,
+              shadowColor: w.color,
+              opacity: w.anim.interpolate({
+                inputRange: [0, 0.15, 0.75, 1],
+                outputRange: [0, 0.28, 0.14, 0],
+              }),
+              transform: [
+                { rotate: `${w.angle}deg` },
+                { translateX: w.anim.interpolate({ inputRange: [0, 1], outputRange: [0, 38] }) },
+                { translateY: w.anim.interpolate({ inputRange: [0, 1], outputRange: [0, 22] }) },
+              ],
+            }]} />
+          ))}
+
           {/* Void aurora bands */}
           {AURORA_BANDS.map((band, i) => (
             <Animated.View key={`aurora${i}`} pointerEvents="none" style={[styles.auroraBand, {
@@ -1719,6 +1777,59 @@ export default function WorldScreen() {
         </Animated.View>
       )}
 
+      {/* ── World stats panel ── */}
+      {showStats && worldStats && (
+        <View style={styles.statsPanel}>
+          <View style={styles.statsPanelHeader}>
+            <Text style={styles.statsPanelTitle}>📊 Estado del Mundo</Text>
+            <Pressable onPress={() => setShowStats(false)} style={styles.statsClose}>
+              <Text style={styles.statsCloseTxt}>✕</Text>
+            </Pressable>
+          </View>
+          <View style={styles.statsRow}>
+            <Text style={styles.statsLabel}>Tick</Text>
+            <Text style={styles.statsVal}>{worldState.current_tick}</Text>
+          </View>
+          <View style={styles.statsRow}>
+            <Text style={styles.statsLabel}>Vivos</Text>
+            <Text style={styles.statsVal}>{entities.length}</Text>
+          </View>
+          <View style={styles.statsRow}>
+            <Text style={styles.statsLabel}>Más anciano</Text>
+            <Text style={styles.statsVal} numberOfLines={1}>
+              {worldStats.oldest.name} · {worldStats.oldest.age_ticks ?? 0}t
+            </Text>
+          </View>
+          <View style={styles.statsRow}>
+            <Text style={styles.statsLabel}>Más conectado</Text>
+            <Text style={styles.statsVal} numberOfLines={1}>
+              {worldStats.mostConnected.name} · {Object.keys((worldStats.mostConnected as any).relationships ?? {}).length} rel
+            </Text>
+          </View>
+          {worldStats.totalBirths > 0 && (
+            <View style={styles.statsRow}>
+              <Text style={styles.statsLabel}>Nacimientos</Text>
+              <Text style={styles.statsVal}>{worldStats.totalBirths}</Text>
+            </View>
+          )}
+          {worldStats.totalDeaths > 0 && (
+            <View style={styles.statsRow}>
+              <Text style={styles.statsLabel}>Muertes</Text>
+              <Text style={styles.statsVal}>{worldStats.totalDeaths}</Text>
+            </View>
+          )}
+          {dominantZone && (
+            <View style={[styles.statsRow, { marginTop: 4 }]}>
+              <Text style={styles.statsLabel}>Zona dominante</Text>
+              <Text style={[styles.statsVal, { color: ZONE_COLOR[dominantZone] }]}>
+                ⚜ {ZONE_NAME_ES[dominantZone]}
+              </Text>
+            </View>
+          )}
+          <Text style={[styles.prophecyText, { marginTop: 8, opacity: 0.7 }]}>✦ {prophecy}</Text>
+        </View>
+      )}
+
       {/* ── Day/night atmospheric overlays ── */}
       <Animated.View pointerEvents="none" style={[styles.dawnOverlay, { opacity: dawnOpacity }]} />
       <Animated.View pointerEvents="none" style={[styles.dayOverlay,  { opacity: dayOpacity  }]} />
@@ -1738,6 +1849,10 @@ export default function WorldScreen() {
         <Pressable onPress={() => setBuildMode(!buildMode)}
           style={[styles.zoomBtn, buildMode && styles.zoomBtnActive]}>
           <Text style={styles.zoomTxt}>🏗</Text>
+        </Pressable>
+        <Pressable onPress={() => setShowStats(s => !s)}
+          style={[styles.zoomBtn, showStats && styles.zoomBtnActive]}>
+          <Text style={[styles.zoomTxt, { fontSize: 16 }]}>📊</Text>
         </Pressable>
       </View>
     </View>
@@ -1987,5 +2102,23 @@ const styles = StyleSheet.create({
   awayTitle:   { fontSize: 12, fontWeight: '700', color: '#60a5fa' },
   awaySub:     { fontSize: 10, color: COLORS.textMuted, marginTop: 1 },
   awayClose:   { paddingLeft: 12 },
-  awayCloseTxt:{ fontSize: 14, color: COLORS.textDim },
+  awayCloseTxt: { fontSize: 14, color: COLORS.textDim },
+
+  nebWisp: {
+    position: 'absolute', height: 3, borderRadius: 1.5,
+    shadowOpacity: 0.6, shadowRadius: 5, shadowOffset: { width: 0, height: 0 },
+  },
+  statsPanel: {
+    position: 'absolute', top: 80, right: 12,
+    width: 205, backgroundColor: '#020b18f2',
+    borderRadius: 12, borderWidth: 1, borderColor: COLORS.border,
+    padding: 12,
+  },
+  statsPanelHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  statsPanelTitle:  { flex: 1, fontSize: 11, fontWeight: '700', color: '#22d3ee' },
+  statsClose:       { padding: 2 },
+  statsCloseTxt:    { fontSize: 13, color: COLORS.textDim },
+  statsRow:         { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 },
+  statsLabel:       { fontSize: 10, color: COLORS.textMuted, flex: 1 },
+  statsVal:         { fontSize: 10, fontWeight: '700', color: COLORS.text, maxWidth: 115, textAlign: 'right' },
 })
