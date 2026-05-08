@@ -1,9 +1,7 @@
 /**
- * World v26 — Organic movement overhaul.
- * Replaces chaotic simultaneous teleporting with slow, staggered,
- * mostly-local drift. 80% of moves are small ±20px nudges; only 20%
- * are full zone wanders. Move checks stagger per-entity so they never
- * all lurch at once. Low-energy entities barely move.
+ * World v27 — Feed All button.
+ * Adds a single 🍎 button that feeds every entity at once, with a brief
+ * "Todos alimentados" toast. All organic movement from v26 preserved.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -281,6 +279,7 @@ export default function WorldScreen() {
 
   const [popup, setPopup] = useState<Entity | null>(null)
   const [showStats, setShowStats] = useState(false)
+  const [fedAllFlash, setFedAllFlash] = useState(false)
   const [nebWisps, setNebWisps] = useState<NebWisp[]>([])
   const nextNebId = useRef(0)
   const [desireWisps, setDesireWisps] = useState<DesireWisp[]>([])
@@ -1170,6 +1169,12 @@ export default function WorldScreen() {
     ]).start()
     lastScale.current  = INIT_SCALE
     lastOffset.current = { x: INIT_TX, y: INIT_TY }
+  }
+
+  const feedAll = () => {
+    entities.forEach(e => feedEntity(e.id))
+    setFedAllFlash(true)
+    setTimeout(() => setFedAllFlash(false), 1800)
   }
 
   const goToZone = (zone: string) => {
@@ -2174,7 +2179,16 @@ export default function WorldScreen() {
           style={[styles.zoomBtn, showStats && styles.zoomBtnActive]}>
           <Text style={[styles.zoomTxt, { fontSize: 16 }]}>📊</Text>
         </Pressable>
+        <Pressable onPress={feedAll} style={styles.zoomBtn}>
+          <Text style={[styles.zoomTxt, { fontSize: 16 }]}>🍎</Text>
+        </Pressable>
       </View>
+
+      {fedAllFlash && (
+        <View style={styles.fedAllToast}>
+          <Text style={styles.fedAllToastTxt}>🍎 Todos alimentados</Text>
+        </View>
+      )}
     </View>
   )
 }
@@ -2480,4 +2494,11 @@ const styles = StyleSheet.create({
     fontSize: 14, fontWeight: '300', opacity: 0.6,
     textShadowColor: '#000', textShadowRadius: 3, textShadowOffset: { width: 0, height: 0 },
   },
+  fedAllToast: {
+    position: 'absolute', bottom: 80, alignSelf: 'center',
+    backgroundColor: '#15803d', paddingHorizontal: 20, paddingVertical: 9,
+    borderRadius: 22, opacity: 0.93,
+    shadowColor: '#22c55e', shadowOpacity: 0.5, shadowRadius: 10, shadowOffset: { width: 0, height: 0 },
+  },
+  fedAllToastTxt: { color: '#fff', fontSize: 14, fontWeight: '700' },
 })
