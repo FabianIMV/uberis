@@ -22,7 +22,7 @@ import {
   ZONE_STRUCTURE_TYPES, STRUCTURE_ENERGY_AURA,
 } from './world'
 import type {
-  Entity, WorldState, LiveEvent, ConsciousnessLog, FinalMessage, Structure, RelationshipEntry,
+  Entity, WorldState, LiveEvent, ConsciousnessLog, FinalMessage, Structure, RelationshipEntry, ZoneDrift,
 } from './types'
 
 export interface SimState {
@@ -62,7 +62,7 @@ function nextStructId(){ return _structIdCounter++ }
 export class Simulation {
   private state: SimState = {
     entities:   [],
-    worldState: { current_tick: 0, total_births: 0, total_deaths: 0, cultural_beliefs: {} },
+    worldState: { current_tick: 0, total_births: 0, total_deaths: 0, cultural_beliefs: {}, zoneDrift: {} },
     liveEvents: [],
     logs:       {},
     structures: [],
@@ -452,6 +452,29 @@ export class Simulation {
     }
     const finalStructures = structures.filter(s => s.hp > 0)
 
+    // ── Zone drift: decay + apply terraform results ─────────────────────────
+    const drift = { ...(ws.zoneDrift ?? {}) }
+    for (const zone of ZONE_NAMES) {
+      const d = drift[zone] ?? { energy_delta: 0, curiosity_delta: 0, hue_shift: 0 }
+      // Slow decay toward zero (0.98^tick means halved after ~34 ticks ≈ 4.5 min)
+      drift[zone] = {
+        energy_delta:    d.energy_delta    * 0.98,
+        curiosity_delta: d.curiosity_delta * 0.98,
+        hue_shift:       d.hue_shift       * 0.98,
+      }
+    }
+    for (const r of results) {
+      if (r.terraformZone && r.terraformDelta) {
+        const d = drift[r.terraformZone] ?? { energy_delta: 0, curiosity_delta: 0, hue_shift: 0 }
+        drift[r.terraformZone] = {
+          energy_delta:    Math.max(-1.5, Math.min(1.5, d.energy_delta    + r.terraformDelta.energy_delta)),
+          curiosity_delta: Math.max(-0.4, Math.min(0.4, d.curiosity_delta + r.terraformDelta.curiosity_delta)),
+          hue_shift:       Math.max(0,    Math.min(1,   d.hue_shift       + r.terraformDelta.hue_shift)),
+        }
+      }
+    }
+    ws.zoneDrift = drift
+
     const allEntities = [
       ...alive,
       ...dead,
@@ -472,8 +495,14 @@ export class Simulation {
     ws: WorldState,
     worldEvent: typeof WORLD_EVENTS[0] | null,
     structures: Structure[],
-  ): Promise<{ entity: Entity; child: Entity | null; builtStructure: Structure | null; damagedStructureId: number | null }> {
-    const zoneData = ZONES[e.current_zone] ?? ZONES.Garden
+  ): Promise<{ entity: Entity; child: Entity | null; builtStructure: Structure | null; damagedStructureId: number | null; terraformZone: string | null; terraformDelta: ZoneDrift | null }> {
+    const baseZone  = ZONES[e.current_zone] ?? ZONES.Garden
+    const drift     = ws.zoneDrift?.[e.current_zone] ?? { energy_delta: 0, curiosity_delta: 0, hue_shift: 0 }
+    const zoneData  = {
+      ...baseZone,
+      energy_effect:   baseZone.energy_effect   + drift.energy_delta,
+      curiosity_boost: baseZone.curiosity_boost  + drift.curiosity_delta,
+    }
 
     e.energy += zoneData.energy_effect
 
@@ -528,7 +557,7 @@ export class Simulation {
         life_meaning: msg.life_meaning, at_peace: msg.at_peace,
         cause: 'old_age', tick,
       })
-      return { entity: e, child: null, builtStructure: null, damagedStructureId: null }
+      return { entity: e, child: null, builtStructure: null, damagedStructureId: null, terraformZone: null, terraformDelta: null }
     }
 
     // ── Energy death ──────────────────────────────────────────────────────
@@ -563,7 +592,7 @@ export class Simulation {
         cause:       'energy',
         tick,
       })
-      return { entity: e, child: null, builtStructure: null, damagedStructureId: null }
+      return { entity: e, child: null, builtStructure: null, damagedStructureId: null, terraformZone: null, terraformDelta: null }
     }
 
     // ── Think ─────────────────────────────────────────────────────────────
@@ -573,6 +602,8 @@ export class Simulation {
     let child: Entity | null = null
     let builtStructure: Structure | null = null
     let damagedStructureId: number | null = null
+    let terraformZone: string | null = null
+    let terraformDelta: ZoneDrift | null = null
 
     const nearbyStructures = structures.filter(s => s.zone === e.current_zone)
 
@@ -675,6 +706,23 @@ export class Simulation {
             break
           }
 
+          case 'terraform': {
+            if (e.energy >= 20 && e.genome.creativity > 0.6) {
+              e.energy -= 20
+              const target = t.action_target ?? 'energy_up'
+              const delta: ZoneDrift = { energy_delta: 0, curiosity_delta: 0, hue_shift: 0.08 }
+              if (target === 'energy_up')       { delta.energy_delta    =  0.20; delta.hue_shift = 0.06 }
+              else if (target === 'energy_down'){ delta.energy_delta    = -0.15; delta.hue_shift = 0.04 }
+              else if (target === 'curiosity_up'){ delta.curiosity_delta =  0.10; delta.hue_shift = 0.05 }
+              else if (target === 'mood_shift')  { delta.curiosity_delta = -0.05; delta.energy_delta = 0.08 }
+              terraformZone  = e.current_zone
+              terraformDelta = delta
+              e.memory = [...e.memory, `Terraformé ${e.current_zone}. Lo moldeo con mi voluntad.`].slice(-20)
+              this._pushEvent({ type: 'terraform', entity: e.name, zone: e.current_zone, target, tick })
+            }
+            break
+          }
+
           default:
             break
         }
@@ -711,7 +759,7 @@ export class Simulation {
       }
     }
 
-    return { entity: e, child, builtStructure, damagedStructureId }
+    return { entity: e, child, builtStructure, damagedStructureId, terraformZone, terraformDelta }
   }
 
   // ── Encounters ─────────────────────────────────────────────────────────────
