@@ -1,7 +1,9 @@
 /**
- * World v27 — Feed All button.
- * Adds a single 🍎 button that feeds every entity at once, with a brief
- * "Todos alimentados" toast. All organic movement from v26 preserved.
+ * World v28 — Native-driver movement (perf fix) + Feed All.
+ * Converts entity position from left/top (JS thread) to translateX/Y
+ * (native thread, useNativeDriver:true). Eliminates JS-thread animation
+ * stutter with many entities. Also reduces trail echoes cap 18→5 and
+ * nebula wisps cap 6→3. Feed All button from v27 kept.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -719,7 +721,7 @@ export default function WorldScreen() {
       const angle = 18  + Math.random() * 28
       const anim  = new Animated.Value(0)
       const nid   = nextNebId.current++
-      setNebWisps(prev => [...prev.slice(-6), { id: nid, x, y, color, len, angle, anim }])
+      setNebWisps(prev => [...prev.slice(-3), { id: nid, x, y, color, len, angle, anim }])
       Animated.timing(anim, { toValue: 1, duration: 7000 + Math.random() * 6000, useNativeDriver: true })
         .start(() => setNebWisps(prev => prev.filter(w => w.id !== nid)))
       t = setTimeout(spawn, 3500 + Math.random() * 3000)
@@ -994,18 +996,18 @@ export default function WorldScreen() {
     const midX = (axV + bxV) / 2
     const midY = (ayV + byV) / 2
     Animated.parallel([
-      Animated.timing(posA.x, { toValue: midX - 14, duration: 2000, useNativeDriver: false }),
-      Animated.timing(posA.y, { toValue: midY,      duration: 2000, useNativeDriver: false }),
-      Animated.timing(posB.x, { toValue: midX + 4,  duration: 2000, useNativeDriver: false }),
-      Animated.timing(posB.y, { toValue: midY,      duration: 2000, useNativeDriver: false }),
+      Animated.timing(posA.x, { toValue: midX - 14, duration: 2000, useNativeDriver: true }),
+      Animated.timing(posA.y, { toValue: midY,      duration: 2000, useNativeDriver: true }),
+      Animated.timing(posB.x, { toValue: midX + 4,  duration: 2000, useNativeDriver: true }),
+      Animated.timing(posB.y, { toValue: midY,      duration: 2000, useNativeDriver: true }),
     ]).start(() => {
       const zA = entitiesRef.current.find(e => e.id === idA)?.current_zone ?? 'Garden'
       const zB = entitiesRef.current.find(e => e.id === idB)?.current_zone ?? 'Garden'
       Animated.parallel([
-        Animated.timing(posA.x, { toValue: randomInRegion(zA).x, duration: 3500, useNativeDriver: false }),
-        Animated.timing(posA.y, { toValue: randomInRegion(zA).y, duration: 3500, useNativeDriver: false }),
-        Animated.timing(posB.x, { toValue: randomInRegion(zB).x, duration: 3500, useNativeDriver: false }),
-        Animated.timing(posB.y, { toValue: randomInRegion(zB).y, duration: 3500, useNativeDriver: false }),
+        Animated.timing(posA.x, { toValue: randomInRegion(zA).x, duration: 3500, useNativeDriver: true }),
+        Animated.timing(posA.y, { toValue: randomInRegion(zA).y, duration: 3500, useNativeDriver: true }),
+        Animated.timing(posB.x, { toValue: randomInRegion(zB).x, duration: 3500, useNativeDriver: true }),
+        Animated.timing(posB.y, { toValue: randomInRegion(zB).y, duration: 3500, useNativeDriver: true }),
       ]).start()
     })
     const valA  = (enc as any).relationship_a_to_b ?? 'neutral'
@@ -1069,7 +1071,7 @@ export default function WorldScreen() {
         if (Math.random() < 0.45) {
           const tanim = new Animated.Value(1)
           const tid = nextTrailId.current++
-          setTrailEchoes(prev => [...prev.slice(-18), { id: tid, x: cx, y: cy, color: '#94a3b8', anim: tanim }])
+          setTrailEchoes(prev => [...prev.slice(-5), { id: tid, x: cx, y: cy, color: '#94a3b8', anim: tanim }])
           Animated.timing(tanim, { toValue: 0, duration: 2200, useNativeDriver: true })
             .start(() => setTrailEchoes(prev => prev.filter(t => t.id !== tid)))
         }
@@ -1082,8 +1084,8 @@ export default function WorldScreen() {
         : 5500 + Math.random() * 2500   // zone:  5.5-8s (very smooth)
 
       Animated.parallel([
-        Animated.timing(pos.x, { toValue: targetX, duration: moveDur, useNativeDriver: false }),
-        Animated.timing(pos.y, { toValue: targetY, duration: moveDur, useNativeDriver: false }),
+        Animated.timing(pos.x, { toValue: targetX, duration: moveDur, useNativeDriver: true }),
+        Animated.timing(pos.y, { toValue: targetY, duration: moveDur, useNativeDriver: true }),
       ]).start()
 
       wanderTimers.current[entityId] = setTimeout(() => doWander(entityId), restMs)
@@ -1801,7 +1803,7 @@ export default function WorldScreen() {
             const selected = popup?.id === entity.id
             const energy   = Math.min(100, Math.max(0, Math.round(entity.energy ?? 50)))
             return (
-              <Animated.View key={entity.id} style={[styles.entityWrap, { left: pos.x, top: pos.y }]}>
+              <Animated.View key={entity.id} style={[styles.entityWrap, { transform: [{ translateX: pos.x }, { translateY: pos.y }] }]}>
                 <Pressable onPress={() => setPopup(p => p?.id === entity.id ? null : entity)} style={styles.entityInner}>
                   <Animated.View pointerEvents="none" style={[styles.moodRing, {
                     width: sz + 12, height: sz + 12, borderRadius: (sz + 12) / 2,
