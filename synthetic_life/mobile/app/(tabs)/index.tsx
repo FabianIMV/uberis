@@ -1,9 +1,8 @@
 /**
- * World v28 — Native-driver movement (perf fix) + Feed All.
- * Converts entity position from left/top (JS thread) to translateX/Y
- * (native thread, useNativeDriver:true). Eliminates JS-thread animation
- * stutter with many entities. Also reduces trail echoes cap 18→5 and
- * nebula wisps cap 6→3. Feed All button from v27 kept.
+ * World v29 — Functional buildings + Save button.
+ * Player-placed buildings now register as real structures in the engine,
+ * giving energy auras to entities in the same zone. Adds 💾 Save button
+ * to the header that explicitly persists simulation state.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -45,10 +44,20 @@ const ZONES = ['Garden', 'Archive', 'Void', 'Storm'] as const
 
 // ── Build types ───────────────────────────────────────────────────────────────
 type BuildType = 'house' | 'rock' | 'fire' | 'tree'
-interface Building { id: number; type: BuildType; x: number; y: number }
+interface Building { id: number; type: BuildType; x: number; y: number; engineId: number }
 const BUILD_LABEL: Record<BuildType, string> = { house:'Casa', rock:'Roca', fire:'Fogata', tree:'Árbol' }
 const BUILD_EMOJI: Record<BuildType, string> = { house:'🏠', rock:'🪨', fire:'🔥', tree:'🌲' }
+// Maps player build type → engine structure type + energy aura
+const BUILD_ENGINE_TYPE: Record<BuildType, string>  = { house:'shelter',     rock:'monument', fire:'wind_trap',   tree:'garden_patch' }
+const BUILD_AURA:        Record<BuildType, number>   = { house:2,             rock:0,           fire:1,             tree:1              }
 let _nextBuildId = 1
+
+function zoneForX(x: number): string {
+  if (x < ZW)       return 'Garden'
+  if (x < ZW * 2)   return 'Archive'
+  if (x < ZW * 3)   return 'Void'
+  return 'Storm'
+}
 
 function blendToGold(baseColor: string, gen: number): string {
   // Blend from base emotion color toward gold as generation increases (gen 3 = light tint, gen 6+ = strong)
@@ -256,7 +265,8 @@ interface BondHeart    { key: string; x: number; y: number; color: string; anim:
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function WorldScreen() {
   const { entities, worldState, liveEvents, isThinking, apiEnabled,
-          feedEntity, awaySummary, dismissAwaySummary } = useSimulation()
+          feedEntity, saveNow, addPlayerStructure, removePlayerStructure,
+          awaySummary, dismissAwaySummary } = useSimulation()
   const router = useRouter()
 
   // Pan/zoom
@@ -282,6 +292,7 @@ export default function WorldScreen() {
   const [popup, setPopup] = useState<Entity | null>(null)
   const [showStats, setShowStats] = useState(false)
   const [fedAllFlash, setFedAllFlash] = useState(false)
+  const [savedFlash, setSavedFlash]   = useState(false)
   const [nebWisps, setNebWisps] = useState<NebWisp[]>([])
   const nextNebId = useRef(0)
   const [desireWisps, setDesireWisps] = useState<DesireWisp[]>([])
@@ -1151,7 +1162,10 @@ export default function WorldScreen() {
           const cx = (sx - W / 2 - tx) / s + W / 2
           const cy = (sy - H / 2 - ty) / s + H / 2
           if (cx >= 0 && cx <= W && cy >= 0 && cy <= H) {
-            setBuildings(prev => [...prev, { id: _nextBuildId++, type: selectedBuildRef.current, x: cx, y: cy }])
+            const bt = selectedBuildRef.current
+            const zone = zoneForX(cx)
+            const engineId = addPlayerStructure(BUILD_ENGINE_TYPE[bt], zone, BUILD_AURA[bt])
+            setBuildings(prev => [...prev, { id: _nextBuildId++, type: bt, x: cx, y: cy, engineId }])
           }
         }
       },
@@ -1278,6 +1292,10 @@ export default function WorldScreen() {
           <Text style={styles.prophecyText}>✦ {prophecy}</Text>
         </View>
         <View style={styles.headerRight}>
+          <Pressable onPress={() => { saveNow(); setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1500) }}
+            style={[styles.saveBtn, savedFlash && styles.saveBtnFlash]}>
+            <Text style={styles.saveBtnTxt}>{savedFlash ? '✓ Guardado' : '💾 Guardar'}</Text>
+          </Pressable>
           {isThinking ? (
             <View style={styles.thinkingBadge}><Text style={styles.thinkingTxt}>✦ IA</Text></View>
           ) : apiEnabled ? (
@@ -2009,7 +2027,7 @@ export default function WorldScreen() {
               <Text style={styles.buildTypeLabel}>{BUILD_LABEL[type]}</Text>
             </Pressable>
           ))}
-          <Pressable onPress={() => setBuildings([])} style={styles.buildTypeBtn}>
+          <Pressable onPress={() => { buildings.forEach(b => removePlayerStructure(b.engineId)); setBuildings([]) }} style={styles.buildTypeBtn}>
             <Text style={styles.buildTypeEmoji}>🗑️</Text>
             <Text style={styles.buildTypeLabel}>Limpiar</Text>
           </Pressable>
@@ -2209,6 +2227,9 @@ const styles = StyleSheet.create({
   sparklineWrap:{ opacity: 0.9 },
   prophecyText: { fontSize: 10, color: '#94a3b8', fontStyle: 'italic', marginTop: 3, opacity: 0.8 },
   headerRight:  { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  saveBtn:      { backgroundColor: '#0f172a', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1, borderColor: '#334155' },
+  saveBtnFlash: { backgroundColor: '#052e16', borderColor: '#22c55e' },
+  saveBtnTxt:   { fontSize: 11, fontWeight: '700', color: '#94a3b8' },
   dotLive:      { width: 8, height: 8, borderRadius: 4, backgroundColor: '#22c55e' },
   thinkingBadge: { backgroundColor: '#0e7490', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
   thinkingTxt:   { fontSize: 10, fontWeight: '700', color: '#22d3ee' },
