@@ -1,8 +1,7 @@
 /**
- * World v29 — Functional buildings + Save button.
- * Player-placed buildings now register as real structures in the engine,
- * giving energy auras to entities in the same zone. Adds 💾 Save button
- * to the header that explicitly persists simulation state.
+ * World v30 — Entity-built structures visible + zone drift overlay + terraform events.
+ * Engine structures (built by entities autonomously) now render on the canvas.
+ * Zone drift shifts zone bg color over time as entities terraform. Events logged.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -51,6 +50,29 @@ const BUILD_EMOJI: Record<BuildType, string> = { house:'🏠', rock:'🪨', fire
 const BUILD_ENGINE_TYPE: Record<BuildType, string>  = { house:'shelter',     rock:'monument', fire:'wind_trap',   tree:'garden_patch' }
 const BUILD_AURA:        Record<BuildType, number>   = { house:2,             rock:0,           fire:1,             tree:1              }
 let _nextBuildId = 1
+
+// Engine structure type → emoji (entity-built)
+const ENGINE_STRUCT_EMOJI: Record<string, string> = {
+  shelter:'🏠', garden_patch:'🌿', flower_circle:'💐', water_basin:'💧',
+  beacon:'🕯️', void_altar:'⬛', star_map:'✦', mirror_pool:'🔮',
+  bookshelf:'📚', monument:'🗿', inscription_stone:'📜', memory_well:'🕳️',
+  barrier:'🧱', lightning_rod:'⚡', storm_shelter:'⛺', wind_trap:'🌀',
+}
+// Stable pseudo-random position within a zone region from structure id
+function structurePos(id: number, zone: string): { x: number; y: number } {
+  const r = REGION[zone] ?? REGION.Garden
+  const h = ((id * 2654435761) >>> 0) / 0xffffffff
+  const v = ((id * 1234567891) >>> 0) / 0xffffffff
+  return { x: r.x + 10 + h * (r.w - 20), y: r.y + 6 + v * (r.h - 12) }
+}
+// Zone drift color overlay (hue: 0=green, 0.5=violet, 1=amber)
+function driftColor(hue: number): string {
+  if (hue < 0.01) return 'transparent'
+  const r = Math.round(180 + hue * 75)
+  const g = Math.round(100 - hue * 60)
+  const b = Math.round(200 - hue * 100)
+  return `rgba(${r},${g},${b},${Math.min(0.18, hue * 0.35)})`
+}
 
 function zoneForX(x: number): string {
   if (x < ZW)       return 'Garden'
@@ -266,7 +288,9 @@ interface BondHeart    { key: string; x: number; y: number; color: string; anim:
 export default function WorldScreen() {
   const { entities, worldState, liveEvents, isThinking, apiEnabled,
           feedEntity, saveNow, addPlayerStructure, removePlayerStructure,
+          structures: engineStructures,
           awaySummary, dismissAwaySummary } = useSimulation()
+  const zoneDrift = worldState.zoneDrift ?? {}
   const router = useRouter()
 
   // Pan/zoom
@@ -965,6 +989,30 @@ export default function WorldScreen() {
       .start(() => setDeathMarks(prev => prev.filter(d => d.id !== dmId)))
   }, [liveEvents])
 
+  // ── Terraform events ─────────────────────────────────────────────────────
+  const lastTerraformRef = useRef(-1)
+  useEffect(() => {
+    const ev = liveEvents.find(e => e.type === 'terraform')
+    if (!ev || ev.id === lastTerraformRef.current) return
+    lastTerraformRef.current = ev.id
+    const zone = ZONE_NAME_ES[(ev as any).zone] ?? (ev as any).zone
+    setEventHistory(prev => [...prev.slice(-4), {
+      icon: '🌀', text: `${(ev as any).entity} terraformó ${zone}`, tick: worldState.current_tick,
+    }])
+  }, [liveEvents])
+
+  // ── structure_built events ────────────────────────────────────────────────
+  const lastBuiltRef = useRef(-1)
+  useEffect(() => {
+    const ev = liveEvents.find(e => e.type === 'structure_built')
+    if (!ev || ev.id === lastBuiltRef.current) return
+    lastBuiltRef.current = ev.id
+    const zone = ZONE_NAME_ES[(ev as any).zone] ?? (ev as any).zone
+    setEventHistory(prev => [...prev.slice(-4), {
+      icon: '🔨', text: `${(ev as any).builder} construyó en ${zone}`, tick: worldState.current_tick,
+    }])
+  }, [liveEvents])
+
   // ── Grief floating hearts ─────────────────────────────────────────────────
   const [griefs, setGriefs] = useState<GriefMark[]>([])
   const lastGriefRef = useRef(-1)
@@ -1500,6 +1548,30 @@ export default function WorldScreen() {
               <View key={`zh${zone}`} pointerEvents="none" style={[styles.zoneHalo, {
                 left: i * ZW, backgroundColor: glowColor, opacity: glowOp,
               }]} />
+            )
+          })}
+
+          {/* Zone drift color overlay — shows accumulated terraform effect */}
+          {ZONES.map((zone, i) => {
+            const d = zoneDrift[zone]
+            if (!d || d.hue_shift < 0.01) return null
+            return (
+              <View key={`zd${zone}`} pointerEvents="none" style={[styles.zoneHalo, {
+                left: i * ZW, backgroundColor: driftColor(d.hue_shift),
+              }]} />
+            )
+          })}
+
+          {/* Entity-built structures (autonomous builds by entities) */}
+          {engineStructures.filter(s => s.builder_id > 0).map(s => {
+            const pos = structurePos(s.id, s.zone)
+            const emoji = ENGINE_STRUCT_EMOJI[s.type] ?? '🏗'
+            const opacity = Math.max(0.3, s.hp / 100)
+            return (
+              <View key={`es${s.id}`} pointerEvents="none" style={[styles.engineStruct, { left: pos.x, top: pos.y, opacity }]}>
+                <Text style={styles.engineStructEmoji}>{emoji}</Text>
+                <Text style={styles.engineStructLabel} numberOfLines={1}>{s.builder_name.split(' ')[0]}</Text>
+              </View>
             )
           })}
 
@@ -2524,4 +2596,7 @@ const styles = StyleSheet.create({
     shadowColor: '#22c55e', shadowOpacity: 0.5, shadowRadius: 10, shadowOffset: { width: 0, height: 0 },
   },
   fedAllToastTxt: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  engineStruct:      { position: 'absolute', alignItems: 'center' },
+  engineStructEmoji: { fontSize: 14 },
+  engineStructLabel: { fontSize: 7, color: '#94a3b8', marginTop: 1 },
 })
