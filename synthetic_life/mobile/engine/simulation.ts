@@ -131,6 +131,26 @@ export class Simulation {
     this._notify()
   }
 
+  addPlayerStructure(type: string, zone: string, aura: number): number {
+    const id = -(Date.now() % 1_000_000)
+    const s: Structure = {
+      id, zone, type,
+      builder_id:   0,
+      builder_name: 'Player',
+      hp:           100,
+      energy_aura:  aura,
+      created_tick: this.state.worldState.current_tick,
+    }
+    this._setState({ structures: [...(this.state.structures ?? []), s] })
+    this._notify()
+    return id
+  }
+
+  removePlayerStructure(id: number) {
+    this._setState({ structures: (this.state.structures ?? []).filter(s => s.id !== id) })
+    this._notify()
+  }
+
   // ── Init ─────────────────────────────────────────────────────────────────
 
   private _seed() {
