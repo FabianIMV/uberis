@@ -244,6 +244,7 @@ AVAILABLE ACTIONS AND THEIR COSTS:
   • build         → construct something (costs 15 energy). Use action_target = structure type from buildable list. ${canBuild ? 'YOU CAN BUILD.' : 'TOO LOW ENERGY TO BUILD.'}
   • destroy       → tear down a structure here (costs 5 energy, deals 30 damage). ${hasEnemyStructure ? "There are others' structures here you could destroy." : 'No foreign structures to destroy.'}
   • clone         → create a new being from yourself (costs 35 energy). ${canClone ? 'YOU HAVE ENOUGH ENERGY AND MATURITY TO CLONE.' : `NOT READY (need 85 energy, have ${entity.energy.toFixed(0)}; need age 8, have ${entity.age_ticks}).`}
+  • terraform     → reshape this zone with your will (costs 20 energy, requires creativity). ${entity.genome.creativity > 0.6 && entity.energy >= 20 ? 'YOU CAN TERRAFORM. action_target must be one of: energy_up | energy_down | curiosity_up | mood_shift' : 'NOT AVAILABLE (need creativity > 0.6 and 20 energy).'}
 
 ---
 
@@ -254,8 +255,8 @@ Your relationships and current goal are part of who you are — let them shape y
 Respond ONLY with a valid JSON object — no markdown, no preamble, no explanation:
 {
   "inner_monologue": "Your first-person thoughts right now. Rich, specific, rooted in your traits, relationships, and goal. Reference real names if relevant. 2–4 sentences.",
-  "action": "One of: explore | rest | seek_food | seek_other | contemplate | grieve | flee | play | build | destroy | clone",
-  "action_target": "For explore: a zone name. For build: the structure type. For destroy: the type to destroy. Otherwise null.",
+  "action": "One of: explore | rest | seek_food | seek_other | contemplate | grieve | flee | play | build | destroy | clone | terraform",
+  "action_target": "For explore: a zone name. For build: the structure type. For destroy: the type to destroy. For terraform: energy_up | energy_down | curiosity_up | mood_shift. Otherwise null.",
   "new_belief": {"key": "short_snake_case_identifier", "value": "what you now believe"},
   "emotion": "Your dominant emotion right now (one or two words)",
   "emotion_intensity": 0.0,
@@ -551,6 +552,10 @@ function fallbackThought(entity: Entity, nearbyStructures: Structure[] = []): Th
     action = 'build'
     const buildable = ZONE_STRUCTURE_TYPES[zone] ?? []
     target = buildable[Math.floor(Math.random() * buildable.length)] ?? null
+  } else if (entity.genome.creativity > 0.75 && entity.energy >= 20) {
+    action = 'terraform'
+    const targets = ['energy_up', 'curiosity_up', 'mood_shift']
+    target = targets[Math.floor(Math.random() * targets.length)]
   } else if (entity.genome.curiosity > 0.7) {
     action = 'explore'
     const otherZones = Object.keys(ZONES).filter(z => z !== zone)
