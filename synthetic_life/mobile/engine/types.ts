@@ -77,11 +77,18 @@ export interface ConsciousnessLog {
   timestamp:      string
 }
 
+export interface ZoneDrift {
+  energy_delta:    number   // additive to base energy_effect
+  curiosity_delta: number   // additive to base curiosity_boost
+  hue_shift:       number   // 0–1, drives visual color tint overlay
+}
+
 export interface WorldState {
   current_tick:      number
   total_births:      number
   total_deaths:      number
   cultural_beliefs:  Record<string, Record<string, string>>
+  zoneDrift:         Record<string, ZoneDrift>
 }
 
 export interface LiveEvent {
