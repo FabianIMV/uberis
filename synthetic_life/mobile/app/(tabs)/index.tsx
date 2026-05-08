@@ -2270,11 +2270,13 @@ export default function WorldScreen() {
         <Pressable onPress={feedAll} style={styles.zoomBtn}>
           <Text style={[styles.zoomTxt, { fontSize: 16 }]}>🍎</Text>
         </Pressable>
-        <Pressable onPress={() => { saveNow(); setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1500) }}
-          style={[styles.zoomBtn, savedFlash && styles.zoomBtnActive]}>
-          <Text style={[styles.zoomTxt, { fontSize: 13 }]}>{savedFlash ? '✓' : '💾'}</Text>
-        </Pressable>
       </View>
+
+      {/* ── Save button — separate, left side, middle height ── */}
+      <Pressable onPress={() => { saveNow(); setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1500) }}
+        style={[styles.saveFloatBtn, savedFlash && styles.saveFloatBtnFlash]}>
+        <Text style={styles.saveFloatTxt}>{savedFlash ? '✓' : '💾'}</Text>
+      </Pressable>
 
       {fedAllFlash && (
         <View style={styles.fedAllToast}>
@@ -2599,4 +2601,12 @@ const styles = StyleSheet.create({
   engineStruct:      { position: 'absolute', alignItems: 'center' },
   engineStructEmoji: { fontSize: 14 },
   engineStructLabel: { fontSize: 7, color: '#94a3b8', marginTop: 1 },
+  saveFloatBtn: {
+    position: 'absolute', left: 14, top: '45%',
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: '#0f172a', borderWidth: 1, borderColor: '#334155',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  saveFloatBtnFlash: { backgroundColor: '#052e16', borderColor: '#22c55e' },
+  saveFloatTxt: { fontSize: 18 },
 })
