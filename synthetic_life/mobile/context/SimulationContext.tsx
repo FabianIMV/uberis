@@ -21,9 +21,12 @@ interface SimContextValue {
   connected:          true
   isThinking:         boolean
   apiEnabled:         boolean
-  feedEntity:         (id: number) => void
-  awaySummary:        CatchUpSummary | null   // set when app re-opens after absence
-  dismissAwaySummary: () => void
+  feedEntity:            (id: number) => void
+  saveNow:               () => Promise<void>
+  addPlayerStructure:    (type: string, zone: string, aura: number) => number
+  removePlayerStructure: (id: number) => void
+  awaySummary:           CatchUpSummary | null
+  dismissAwaySummary:    () => void
 }
 
 const SimContext = createContext<SimContextValue | null>(null)
@@ -75,9 +78,12 @@ export function SimulationProvider({ children }: { children: React.ReactNode }) 
     connected:          true,
     isThinking,
     apiEnabled:         isApiConfigured(),
-    feedEntity:         (id) => simulation.feedEntity(id),
+    feedEntity:            (id) => simulation.feedEntity(id),
+    saveNow:               () => simulation.save(),
+    addPlayerStructure:    (type, zone, aura) => simulation.addPlayerStructure(type, zone, aura),
+    removePlayerStructure: (id) => simulation.removePlayerStructure(id),
     awaySummary,
-    dismissAwaySummary: () => setAwaySummary(null),
+    dismissAwaySummary:    () => setAwaySummary(null),
   }
 
   return (
