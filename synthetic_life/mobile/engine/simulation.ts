@@ -45,7 +45,7 @@ type Listener = (state: SimState) => void
 const TICK_INTERVAL_MS    = 8_000
 const MAX_POPULATION      = 20
 const THINK_EVERY_N_TICKS = 3
-const MAX_CATCHUP_TICKS   = 1000
+const MAX_CATCHUP_TICKS   = 40
 const MEMORY_CONSOLIDATION_THRESHOLD = 18   // compress when memory exceeds this
 const MEMORY_CONSOLIDATION_EVERY     = 15   // check every N ticks per entity
 
@@ -154,7 +154,7 @@ export class Simulation {
   // ── Init ─────────────────────────────────────────────────────────────────
 
   private _seed() {
-    if (this.state.entities.length > 0) return
+    if (this.state.entities.filter(e => e.is_alive).length > 0) return
     const zones = ZONE_NAMES
     const entities: Entity[] = SEED_GENOMES.map((genome, i) => ({
       id:                    nextId(),
