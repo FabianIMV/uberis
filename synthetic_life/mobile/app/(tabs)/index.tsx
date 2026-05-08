@@ -1340,10 +1340,6 @@ export default function WorldScreen() {
           <Text style={styles.prophecyText}>✦ {prophecy}</Text>
         </View>
         <View style={styles.headerRight}>
-          <Pressable onPress={() => { saveNow(); setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1500) }}
-            style={[styles.saveBtn, savedFlash && styles.saveBtnFlash]}>
-            <Text style={styles.saveBtnTxt}>{savedFlash ? '✓ Guardado' : '💾 Guardar'}</Text>
-          </Pressable>
           {isThinking ? (
             <View style={styles.thinkingBadge}><Text style={styles.thinkingTxt}>✦ IA</Text></View>
           ) : apiEnabled ? (
@@ -2273,6 +2269,10 @@ export default function WorldScreen() {
         </Pressable>
         <Pressable onPress={feedAll} style={styles.zoomBtn}>
           <Text style={[styles.zoomTxt, { fontSize: 16 }]}>🍎</Text>
+        </Pressable>
+        <Pressable onPress={() => { saveNow(); setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1500) }}
+          style={[styles.zoomBtn, savedFlash && styles.zoomBtnActive]}>
+          <Text style={[styles.zoomTxt, { fontSize: 13 }]}>{savedFlash ? '✓' : '💾'}</Text>
         </Pressable>
       </View>
 
