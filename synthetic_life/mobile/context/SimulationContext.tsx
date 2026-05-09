@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { AppState } from 'react-native'
 import { simulation, type SimState, type CatchUpSummary } from '../engine/simulation'
 import { subscribeToApiCalls, isApiConfigured } from '../engine/brain'
-import type { Entity, ConsciousnessLog, LiveEvent, WorldState, Structure } from '../engine/types'
+import type { Entity, ConsciousnessLog, LiveEvent, WorldState, Structure, WorldObject } from '../engine/types'
 import {
   dbGetAllEntities, dbGetEntityThoughts, dbGetWorldTimeline,
   dbGetEncounters, dbGetStats,
@@ -18,10 +18,12 @@ interface SimContextValue {
   liveEvents:         LiveEvent[]
   logs:               Record<number, ConsciousnessLog[]>
   structures:         Structure[]
+  worldObjects:       WorldObject[]
   connected:          true
   isThinking:         boolean
   apiEnabled:         boolean
   feedEntity:            (id: number) => void
+  bathEntity:            (id: number) => void
   saveNow:               () => Promise<void>
   addPlayerStructure:    (type: string, zone: string, aura: number) => number
   removePlayerStructure: (id: number) => void
@@ -75,10 +77,12 @@ export function SimulationProvider({ children }: { children: React.ReactNode }) 
     liveEvents:         simState.liveEvents,
     logs:               simState.logs,
     structures:         simState.structures ?? [],
+    worldObjects:       simState.worldObjects ?? [],
     connected:          true,
     isThinking,
     apiEnabled:         isApiConfigured(),
     feedEntity:            (id) => simulation.feedEntity(id),
+    bathEntity:            (id) => simulation.bathEntity(id),
     saveNow:               () => simulation.save(),
     addPlayerStructure:    (type, zone, aura) => simulation.addPlayerStructure(type, zone, aura),
     removePlayerStructure: (id) => simulation.removePlayerStructure(id),
