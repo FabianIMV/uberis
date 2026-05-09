@@ -9,6 +9,18 @@ export interface Structure {
   created_tick: number
 }
 
+export interface WorldObject {
+  id:           number
+  type:         'apple_tree' | 'log' | 'bush' | 'pond'
+  zone:         string
+  x:            number   // 0–1 fraction of zone width (for rendering)
+  y:            number   // 0–1 fraction of ground height (for rendering)
+  apples:       number   // current apples (apple_tree only)
+  max_apples:   number   // max capacity
+  hp:           number   // 0–100; log decays over time
+  created_tick: number
+}
+
 export interface Genome {
   curiosity:      number
   aggression:     number
@@ -55,6 +67,7 @@ export interface Entity {
   relationships:        Record<string, RelationshipEntry>   // key = String(entity_id)
   final_message:        FinalMessage | null
   died_at_tick:         number | null
+  resources?:           { wood: number }
 }
 
 export interface FinalMessage {
