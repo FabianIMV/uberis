@@ -22,7 +22,7 @@ import {
   ZONE_STRUCTURE_TYPES, STRUCTURE_ENERGY_AURA,
 } from './world'
 import type {
-  Entity, WorldState, LiveEvent, ConsciousnessLog, FinalMessage, Structure, RelationshipEntry, ZoneDrift,
+  Entity, WorldState, LiveEvent, ConsciousnessLog, FinalMessage, Structure, RelationshipEntry, ZoneDrift, WorldObject,
 } from './types'
 
 export interface SimState {
@@ -31,6 +31,7 @@ export interface SimState {
   liveEvents:   LiveEvent[]
   logs:         Record<number, ConsciousnessLog[]>  // id -> last 20 logs
   structures:   Structure[]
+  worldObjects: WorldObject[]
 }
 
 export interface CatchUpSummary {
@@ -53,11 +54,13 @@ let _idCounter = 1
 let _logIdCounter = 1
 let _eventIdCounter = 1
 let _structIdCounter = 1
+let _wobjIdCounter = 1
 
 function nextId()      { return _idCounter++ }
 function nextLogId()   { return _logIdCounter++ }
 function nextEvId()    { return _eventIdCounter++ }
 function nextStructId(){ return _structIdCounter++ }
+function nextWobjId()  { return _wobjIdCounter++ }
 
 export class Simulation {
   private state: SimState = {
@@ -66,6 +69,7 @@ export class Simulation {
     liveEvents: [],
     logs:       {},
     structures: [],
+    worldObjects: [],
   }
 
   private timer: ReturnType<typeof setTimeout> | null = null
@@ -131,6 +135,16 @@ export class Simulation {
     this._notify()
   }
 
+  bathEntity(id: number) {
+    this._mutateEntity(id, e => ({
+      emotional_state: { emotion: 'content', intensity: 0.7 },
+      energy: Math.min(100, e.energy + 5),
+      memory: [...e.memory, 'Me bañaron. El agua fresca calló el ruido dentro de mí.'].slice(-20),
+    }))
+    this._pushEvent({ type: 'entity_bathed', name: this._findEntity(id)?.name ?? '', tick: this.state.worldState.current_tick })
+    this._notify()
+  }
+
   addPlayerStructure(type: string, zone: string, aura: number): number {
     const id = -(Date.now() % 1_000_000)
     const s: Structure = {
@@ -179,10 +193,56 @@ export class Simulation {
       relationships:         {},
       final_message:         null,
       died_at_tick:          null,
+      resources:             { wood: 0 },
     }))
     this._setState({ entities })
+    this._initWorldObjects()
     this._notify()
     for (const e of entities) dbInsertEntity(e, 0).catch(() => {})
+  }
+
+  // ── World objects ─────────────────────────────────────────────────────────
+
+  private _initWorldObjects() {
+    const objs: WorldObject[] = []
+    // Garden: 4 apple trees, 2 bushes, 1 pond
+    const zones: [string, number, number, number][] = [
+      // [zone, trees, bushes, ponds]
+      ['Garden',  4, 2, 1],
+      ['Archive', 2, 1, 0],
+      ['Void',    1, 0, 1],
+      ['Storm',   1, 1, 0],
+    ]
+    const tick = this.state.worldState.current_tick
+    for (const [zone, trees, bushes, ponds] of zones) {
+      for (let i = 0; i < trees; i++) {
+        objs.push({ id: nextWobjId(), type: 'apple_tree', zone, x: (i+1)/(trees+1), y: 0.2 + Math.random()*0.4, apples: 3+Math.floor(Math.random()*3), max_apples: 5, hp: 100, created_tick: tick })
+      }
+      for (let i = 0; i < bushes; i++) {
+        objs.push({ id: nextWobjId(), type: 'bush', zone, x: (i+1)/(bushes+1)*0.8+0.1, y: 0.6+Math.random()*0.3, apples: 1+Math.floor(Math.random()*2), max_apples: 2, hp: 100, created_tick: tick })
+      }
+      for (let i = 0; i < ponds; i++) {
+        objs.push({ id: nextWobjId(), type: 'pond', zone, x: 0.3+Math.random()*0.4, y: 0.75+Math.random()*0.15, apples: 0, max_apples: 0, hp: 100, created_tick: tick })
+      }
+    }
+    this._setState({ worldObjects: objs })
+  }
+
+  private _tickWorldObjects(tick: number) {
+    const objs = (this.state.worldObjects ?? []).map(o => {
+      // Apple/bush regen every 12 ticks
+      if ((o.type === 'apple_tree' || o.type === 'bush') && tick % 12 === 0 && o.apples < o.max_apples) {
+        return { ...o, apples: Math.min(o.max_apples, o.apples + 1) }
+      }
+      // Logs decay hp over time
+      if (o.type === 'log') {
+        const hp = o.hp - 2
+        if (hp <= 0) return null  // log disappears
+        return { ...o, hp }
+      }
+      return o
+    }).filter(Boolean) as WorldObject[]
+    this._setState({ worldObjects: objs })
   }
 
   // ── Relationship helpers ──────────────────────────────────────────────────
@@ -361,6 +421,9 @@ export class Simulation {
     ws.current_tick += 1
     const tick = ws.current_tick
 
+    // Tick world objects (apple regen, log decay)
+    this._tickWorldObjects(tick)
+
     let entities = this.state.entities.filter(e => e.is_alive)
 
     if (entities.length === 0) {
@@ -481,7 +544,13 @@ export class Simulation {
       ...this.state.entities.filter(e => !e.is_alive && !dead.find(d => d.id === e.id)),
     ]
 
-    this._setState({ entities: allEntities, worldState: ws, structures: finalStructures })
+    // Trim dead entities to last 50 to keep state size bounded
+    const deadTrimmed = allEntities.filter(e => !e.is_alive)
+      .sort((a, b) => (b.died_at_tick ?? 0) - (a.died_at_tick ?? 0))
+      .slice(0, 50)
+    const trimmedEntities = [...allEntities.filter(e => e.is_alive), ...deadTrimmed]
+
+    this._setState({ entities: trimmedEntities, worldState: ws, structures: finalStructures })
     this._pushEvent({ type: 'tick', tick, population: alive.length })
     this._notify()
     persistState(this.state).catch(() => {})
@@ -608,7 +677,7 @@ export class Simulation {
     const nearbyStructures = structures.filter(s => s.zone === e.current_zone)
 
     if (tick % thinkEvery === e.id % thinkEvery) {
-      const t = await think(e, tick, ws.cultural_beliefs, nearbyStructures)
+      const t = await think(e, tick, ws.cultural_beliefs, nearbyStructures, this.state.worldObjects ?? [])
       if (t) {
         e.last_thought          = t.inner_monologue
         e.emotional_state       = { emotion: t.emotion, intensity: t.emotion_intensity }
@@ -648,6 +717,46 @@ export class Simulation {
             e.energy = Math.min(100, e.energy + 12)
             e.memory = [...e.memory, 'Encontré alimento y me recuperé.'].slice(-20)
             break
+
+          case 'pick_apple': {
+            const objs = this.state.worldObjects ?? []
+            const treeInZone = objs.find(o => o.zone === e.current_zone && (o.type === 'apple_tree' || o.type === 'bush') && o.apples > 0)
+            if (treeInZone) {
+              e.energy = Math.min(100, e.energy + 18)
+              const updated = objs.map(o => o.id === treeInZone.id ? { ...o, apples: o.apples - 1 } : o)
+              this._setState({ worldObjects: updated })
+              e.memory = [...e.memory, `Tomé una manzana del árbol. Dulce y real.`].slice(-20)
+              this._pushEvent({ type: 'pick_apple', entity: e.name, zone: e.current_zone, tick })
+            } else {
+              // No apples — fall back to rest
+              e.energy = Math.min(100, e.energy + 4)
+            }
+            break
+          }
+
+          case 'chop_tree': {
+            const objs = this.state.worldObjects ?? []
+            const tree = objs.find(o => o.zone === e.current_zone && o.type === 'apple_tree' && o.hp > 0)
+            if (tree && e.energy >= 10) {
+              e.energy -= 10
+              const newHp = tree.hp - 40
+              let updated: WorldObject[]
+              if (newHp <= 0) {
+                // Tree falls, becomes a log
+                const log: WorldObject = { id: nextWobjId(), type: 'log', zone: e.current_zone, x: tree.x, y: tree.y, apples: 0, max_apples: 0, hp: 80, created_tick: tick }
+                updated = objs.filter(o => o.id !== tree.id).concat(log)
+                // Entity gains wood
+                e.resources = { ...(e.resources ?? { wood: 0 }), wood: (e.resources?.wood ?? 0) + 2 }
+                e.memory = [...e.memory, `Talé un árbol. Ahora tengo madera. La destrucción también es creación.`].slice(-20)
+                this._pushEvent({ type: 'tree_chopped', entity: e.name, zone: e.current_zone, tick })
+              } else {
+                updated = objs.map(o => o.id === tree.id ? { ...o, hp: newHp } : o)
+                e.memory = [...e.memory, `Golpeé el árbol. Cruje pero resiste.`].slice(-20)
+              }
+              this._setState({ worldObjects: updated })
+            }
+            break
+          }
 
           case 'build': {
             const structType = t.action_target ?? (ZONE_STRUCTURE_TYPES[e.current_zone]?.[0])
