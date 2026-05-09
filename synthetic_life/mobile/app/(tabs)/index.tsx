@@ -453,6 +453,20 @@ export default function WorldScreen() {
     setTimeout(() => setSavedFlash(false), 1500)
   }
 
+  // ── Mass actions ──────────────────────────────────────────────────────────
+  const [feedFlash, setFeedFlash]   = useState(false)
+  const [bathFlash, setBathFlash]   = useState(false)
+  const handleFeedAll = () => {
+    aliveEntities.forEach(e => feedEntity(e.id))
+    setFeedFlash(true)
+    setTimeout(() => setFeedFlash(false), 1200)
+  }
+  const handleBathAll = () => {
+    aliveEntities.forEach(e => bathEntity(e.id))
+    setBathFlash(true)
+    setTimeout(() => setBathFlash(false), 1200)
+  }
+
   // ── Event ticker (last event in feed) ────────────────────────────────────
   const lastEvent = liveEvents[0]
 
@@ -513,6 +527,12 @@ export default function WorldScreen() {
               <Text style={[styles.thinkTxt, { color: '#4ade80' }]}>✦ ON</Text>
             </View>
           )}
+          <Pressable onPress={handleFeedAll} style={[styles.saveBtn, feedFlash && styles.feedBtnFlash]}>
+            <Text style={styles.saveTxt}>{feedFlash ? '✓' : '🍎'}</Text>
+          </Pressable>
+          <Pressable onPress={handleBathAll} style={[styles.saveBtn, bathFlash && styles.bathBtnFlash]}>
+            <Text style={styles.saveTxt}>{bathFlash ? '✓' : '🚿'}</Text>
+          </Pressable>
           <Pressable onPress={handleSave} style={[styles.saveBtn, savedFlash && styles.saveBtnFlash]}>
             <Text style={styles.saveTxt}>{savedFlash ? '✓' : '💾'}</Text>
           </Pressable>
@@ -607,6 +627,8 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   saveBtnFlash: { backgroundColor: '#052e16', borderColor: '#22c55e' },
+  feedBtnFlash: { backgroundColor: '#1a0a00', borderColor: '#f59e0b' },
+  bathBtnFlash: { backgroundColor: '#001a2e', borderColor: '#38bdf8' },
   saveTxt: { fontSize: 16 },
 
   eventTicker: {
