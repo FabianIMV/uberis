@@ -2,7 +2,7 @@
  * World v31 — Full rewrite. Single world, full screen, SVG face entities.
  * Apple trees, wood chopping, building. 30fps position loop. No per-entity Animated.
  */
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Dimensions, Pressable, StyleSheet, Text, View,
 } from 'react-native'
@@ -16,7 +16,7 @@ import { useSimulation } from '../../context/SimulationContext'
 import type { Entity, WorldObject } from '../../engine/types'
 
 // ── Screen constants ──────────────────────────────────────────────────────────
-const { width: SW, height: SH } = Dimensions.get('window')
+const { width: SW } = Dimensions.get('window')
 
 const ZONE_NAMES  = ['Garden', 'Archive', 'Void', 'Storm'] as const
 const ZONE_ES     = { Garden: 'Jardín', Archive: 'Archivo', Void: 'Vacío', Storm: 'Tormenta' }
@@ -385,10 +385,16 @@ export default function WorldScreen() {
   const aliveEntities = entities.filter(e => e.is_alive)
   const tick = worldState.current_tick
 
+  // Measure actual container height via onLayout (avoids Dimensions tab-bar error)
+  const [containerH, setContainerH] = useState(600)
+  const onContainerLayout = useCallback((e: any) => {
+    setContainerH(e.nativeEvent.layout.height)
+  }, [])
+
   // Header height accounts for notch
   const headerH = 44 + insets.top
-  // Usable height = full screen minus header
-  const usableH = SH - headerH - insets.bottom
+  // Usable height = measured container minus header and bottom inset
+  const usableH = containerH - headerH - insets.bottom
   const gndY    = usableH * GND_FRAC
 
   // ── Position state ─────────────────────────────────────────────────────────
@@ -452,7 +458,7 @@ export default function WorldScreen() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <View style={[styles.container, { paddingBottom: insets.bottom }]}>
+    <View style={[styles.container, { paddingBottom: insets.bottom }]} onLayout={onContainerLayout}>
       {/* Static background */}
       <BackgroundSvg w={SW} h={usableH + headerH} gndY={gndY + headerH} />
 
