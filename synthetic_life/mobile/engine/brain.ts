@@ -7,7 +7,7 @@
 import Constants from 'expo-constants'
 import { ZONES, ZONE_STRUCTURE_TYPES } from './world'
 import { computeIntelligence } from './evolution'
-import type { Entity, ThoughtResult, FinalMessage, Structure, RelationshipEntry } from './types'
+import type { Entity, ThoughtResult, FinalMessage, Structure, RelationshipEntry, WorldObject } from './types'
 
 const API_KEY: string =
   (Constants.expoConfig?.extra?.anthropicApiKey as string | undefined) ?? ''
@@ -136,8 +136,9 @@ export async function think(
   tick: number,
   culturalBeliefs: Record<string, Record<string, string>>,
   nearbyStructures: Structure[] = [],
+  worldObjects: WorldObject[] = [],
 ): Promise<ThoughtResult | null> {
-  if (!API_KEY) return fallbackThought(entity, nearbyStructures)
+  if (!API_KEY) return fallbackThought(entity, nearbyStructures, worldObjects)
 
   const g        = entity.genome
   const zone     = entity.current_zone
@@ -192,6 +193,20 @@ export async function think(
   const canBuild = entity.energy >= 20
   const hasEnemyStructure = nearbyStructures.some(s => s.builder_id !== entity.id)
 
+  // World objects in this zone
+  const zoneObjects = worldObjects.filter(o => o.zone === entity.current_zone)
+  const treesInZone = zoneObjects.filter(o => o.type === 'apple_tree' || o.type === 'bush')
+  const logsInZone  = zoneObjects.filter(o => o.type === 'log')
+  const pondsInZone = zoneObjects.filter(o => o.type === 'pond')
+  const woodCarried = entity.resources?.wood ?? 0
+
+  let resourcesText = ''
+  if (treesInZone.length) resourcesText += `  🍎 ${treesInZone.filter(o=>o.apples>0).length} árboles/arbustos con manzanas disponibles (${treesInZone.reduce((s,o)=>s+o.apples,0)} manzanas total)\n`
+  if (treesInZone.some(o=>o.apples===0)) resourcesText += `  🌳 ${treesInZone.filter(o=>o.apples===0).length} árboles sin manzanas (talables)\n`
+  if (logsInZone.length) resourcesText += `  🪵 ${logsInZone.length} troncos en el suelo\n`
+  if (pondsInZone.length) resourcesText += `  💧 Hay un estanque — puedes descansar junto a él\n`
+  if (woodCarried > 0) resourcesText += `  🪵 Llevas ${woodCarried} unidades de madera — puedes construir con ellas\n`
+
   const intel = computeIntelligence(entity)
   const wisdomStage =
     intel > 75 ? 'anciano sabio — has vivido mucho, sufrido, aprendido. Tus pensamientos tienen capas y profundidad.' :
@@ -231,7 +246,7 @@ YOUR LINEAGE:
 
 WHAT EXISTS IN YOUR ZONE (${zone}):
 ${structureLines}
-
+${resourcesText ? '\nNATURAL RESOURCES HERE:\n' + resourcesText : ''}
 WHAT YOU CAN BUILD HERE: ${buildableHere}
 
 AVAILABLE ACTIONS AND THEIR COSTS:
@@ -245,6 +260,8 @@ AVAILABLE ACTIONS AND THEIR COSTS:
   • destroy       → tear down a structure here (costs 5 energy, deals 30 damage). ${hasEnemyStructure ? "There are others' structures here you could destroy." : 'No foreign structures to destroy.'}
   • clone         → create a new being from yourself (costs 35 energy). ${canClone ? 'YOU HAVE ENOUGH ENERGY AND MATURITY TO CLONE.' : `NOT READY (need 85 energy, have ${entity.energy.toFixed(0)}; need age 8, have ${entity.age_ticks}).`}
   • terraform     → reshape this zone with your will (costs 20 energy, requires creativity). ${entity.genome.creativity > 0.6 && entity.energy >= 20 ? 'YOU CAN TERRAFORM. action_target must be one of: energy_up | energy_down | curiosity_up | mood_shift' : 'NOT AVAILABLE (need creativity > 0.6 and 20 energy).'}
+  • pick_apple   → take an apple from a tree/bush here (+18 energy). ${treesInZone.some(o=>o.apples>0) ? 'TREES WITH APPLES AVAILABLE HERE.' : 'No apples here right now.'}
+  • chop_tree    → chop down a tree (costs 10 energy, gain 2 wood). ${treesInZone.some(o=>o.type==='apple_tree') ? 'TREE AVAILABLE TO CHOP.' : 'No trees to chop here.'}
 
 ---
 
@@ -255,7 +272,7 @@ Your relationships and current goal are part of who you are — let them shape y
 Respond ONLY with a valid JSON object — no markdown, no preamble, no explanation:
 {
   "inner_monologue": "Your first-person thoughts right now. Rich, specific, rooted in your traits, relationships, and goal. Reference real names if relevant. 2–4 sentences.",
-  "action": "One of: explore | rest | seek_food | seek_other | contemplate | grieve | flee | play | build | destroy | clone | terraform",
+  "action": "One of: explore | rest | seek_food | seek_other | contemplate | grieve | flee | play | build | destroy | clone | terraform | pick_apple | chop_tree",
   "action_target": "For explore: a zone name. For build: the structure type. For destroy: the type to destroy. For terraform: energy_up | energy_down | curiosity_up | mood_shift. Otherwise null.",
   "new_belief": {"key": "short_snake_case_identifier", "value": "what you now believe"},
   "emotion": "Your dominant emotion right now (one or two words)",
@@ -267,7 +284,7 @@ Respond ONLY with a valid JSON object — no markdown, no preamble, no explanati
 }`
 
   const text = await callClaude(prompt, 700)
-  if (!text) return fallbackThought(entity, nearbyStructures)
+  if (!text) return fallbackThought(entity, nearbyStructures, worldObjects)
   try {
     const r = JSON.parse(text)
     r.emotion_intensity = Math.max(0, Math.min(1, parseFloat(r.emotion_intensity) || 0.5))
@@ -275,7 +292,7 @@ Respond ONLY with a valid JSON object — no markdown, no preamble, no explanati
     if (!('goal_update' in r)) r.goal_update = null
     return r as ThoughtResult
   } catch {
-    return fallbackThought(entity, nearbyStructures)
+    return fallbackThought(entity, nearbyStructures, worldObjects)
   }
 }
 
@@ -527,7 +544,7 @@ const EXISTENTIALS: string[] = [
   'La brevedad de mi vida no la disminuye. La concentra.',
 ]
 
-function fallbackThought(entity: Entity, nearbyStructures: Structure[] = []): ThoughtResult {
+function fallbackThought(entity: Entity, nearbyStructures: Structure[] = [], worldObjects: WorldObject[] = []): ThoughtResult {
   const zone     = entity.current_zone
   const zoneData = ZONES[zone]
   const pool     = ZONE_THOUGHTS[zone] ?? ZONE_THOUGHTS.Garden
@@ -535,14 +552,23 @@ function fallbackThought(entity: Entity, nearbyStructures: Structure[] = []): Th
 
   const canClone = entity.energy >= 85 && entity.age_ticks >= 8
   const hasEnemyStructure = nearbyStructures.some(s => s.builder_id !== entity.id)
+  const hasApplesInZone = worldObjects.some(o => o.zone === entity.current_zone && (o.type === 'apple_tree' || o.type === 'bush') && o.apples > 0)
 
   let action: string = 'contemplate'
   let target: string | null = null
 
   if (entity.energy < 25) {
-    action = 'seek_food'
+    if (hasApplesInZone) {
+      action = 'pick_apple'
+    } else {
+      action = 'seek_food'
+    }
+  } else if (entity.energy < 45 && hasApplesInZone) {
+    action = 'pick_apple'
   } else if (entity.energy < 45) {
     action = 'rest'
+  } else if (entity.energy < 60 && hasApplesInZone) {
+    action = 'pick_apple'
   } else if (canClone && entity.genome.survival_drive > 0.7) {
     action = 'clone'
   } else if (hasEnemyStructure && entity.genome.aggression > 0.7) {
