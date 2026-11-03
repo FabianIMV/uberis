@@ -20,7 +20,7 @@ import {
   WORLD_HEIGHT,
   WORLD_WIDTH,
 } from './types';
-import { BIOMES, getBiomeAt } from './biomes';
+import { BIOMES, BIOME_MAP, getBiomeAt } from './biomes';
 
 let _resourceIdCounter = 1;
 let _predatorIdCounter = 1;
@@ -251,6 +251,14 @@ export function createInitialPredators(): Predator[] {
   ];
 }
 
+const PREDATOR_STRIKE_COOLDOWN_SEC = 2.4;
+const PREDATOR_REPEL_COOLDOWN_SEC = 14;
+const PREDATOR_RESPAWN_SEC = 240;
+const PREDATOR_LAIRS: { x: number; y: number }[] = [
+  { x: 1920, y: 1360 }, // Tierras de Ceniza
+  { x: 1260, y: 340 }, // Velo Abisal
+];
+
 /**
  * Steers and updates Umbra shadow predators.
  * Stalks isolated creatures, flees campfire/watchtower defensive auras,
@@ -270,6 +278,63 @@ export function updatePredators(
 
   for (let i = 0; i < predators.length; i++) {
     const p = predators[i];
+
+    // 0. Banishment & re-coalescence: a defeated Umbra dissolves and later returns from the shadow biomes
+    if (p.state === 'banished') {
+      p.vx = 0;
+      p.vy = 0;
+      p.respawnInSec = (p.respawnInSec ?? PREDATOR_RESPAWN_SEC) - dtSeconds;
+      if (p.respawnInSec <= 0) {
+        const lair = PREDATOR_LAIRS[Math.floor(Math.random() * PREDATOR_LAIRS.length)];
+        p.x = lair.x + (Math.random() - 0.5) * 160;
+        p.y = lair.y + (Math.random() - 0.5) * 160;
+        p.hp = p.maxHp;
+        p.hunger = 20;
+        p.state = 'prowling';
+        p.targetEntityId = null;
+        p.cooldownSec = 8;
+        p.respawnInSec = undefined;
+        p.biome = getBiomeAt(p.x, p.y);
+        liveEvents.push({
+          id: Date.now() + Math.random(),
+          tick: world.currentTick,
+          category: 'predator',
+          title: 'La sombra se recompone',
+          description: `${p.name} volvió a tomar forma en las profundidades de ${BIOME_MAP[p.biome]?.nameEs ?? p.biome}.`,
+          biome: p.biome,
+          x: p.x,
+          y: p.y,
+          important: false,
+          timestamp: new Date().toISOString(),
+        });
+      }
+      continue;
+    }
+
+    if (p.hp <= 0) {
+      p.hp = 0;
+      p.state = 'banished';
+      p.targetEntityId = null;
+      p.respawnInSec = PREDATOR_RESPAWN_SEC;
+      liveEvents.push({
+        id: Date.now() + Math.random(),
+        tick: world.currentTick,
+        category: 'predator',
+        title: 'Umbra disipada',
+        description: `${p.name} se deshizo en humo negro. La región respira en paz por un tiempo.`,
+        biome: p.biome,
+        x: p.x,
+        y: p.y,
+        important: true,
+        timestamp: new Date().toISOString(),
+      });
+      continue;
+    }
+
+    if (p.cooldownSec && p.cooldownSec > 0) {
+      p.cooldownSec = Math.max(0, p.cooldownSec - dtSeconds);
+    }
+    const onCooldown = (p.cooldownSec ?? 0) > 0;
 
     // Gradually recover HP if resting, increase hunger
     p.hunger = Math.min(100, p.hunger + 0.35 * dtSeconds);
@@ -307,7 +372,7 @@ export function updatePredators(
       p.vy = (fDy / fLen) * repelSpeed;
     } else {
       // 2. Target selection: stalk vulnerable, isolated beings especially at night or high hunger
-      if (p.hunger > 35 && (!p.targetEntityId || Math.random() < 0.05)) {
+      if (!onCooldown && p.hunger > 35 && (!p.targetEntityId || Math.random() < 0.05)) {
         let bestTarget: Entity | null = null;
         let minScore = Number.MAX_VALUE;
         const senseRadius = isNight ? 340 : 220;
@@ -315,7 +380,7 @@ export function updatePredators(
         for (let e = 0; e < livingEntities.length; e++) {
           const ent = livingEntities[e];
           const dx = ent.x - p.x;
-          const dy = ent.y - ent.y;
+          const dy = ent.y - p.y;
           const d = Math.sqrt(dx * dx + dy * dy);
 
           if (d < senseRadius) {
@@ -362,7 +427,7 @@ export function updatePredators(
             // Lost sight
             p.state = 'prowling';
             p.targetEntityId = null;
-          } else if (dist < 26) {
+          } else if (dist < 26 && !onCooldown) {
             // 4. Attack encounter!
             // Check if target or nearby allies can fend off predator
             const defenderAllies = livingEntities.filter(
@@ -379,6 +444,7 @@ export function updatePredators(
               p.targetEntityId = null;
               p.vx = -p.vx * 1.5;
               p.vy = -p.vy * 1.5;
+              p.cooldownSec = PREDATOR_REPEL_COOLDOWN_SEC;
               target.health = Math.max(15, target.health - 12);
               target.speechBubble = '¡Atrás, bestia sombría!';
               target.speechTimerMs = 3500;
@@ -400,6 +466,10 @@ export function updatePredators(
               // Predator strikes prey
               const damage = 35 + Math.random() * 20;
               target.health -= damage;
+              p.cooldownSec = PREDATOR_STRIKE_COOLDOWN_SEC;
+              // Recoil after the strike so the prey gets a chance to flee
+              p.vx = -(dx / dist) * 40;
+              p.vy = -(dy / dist) * 40;
               target.speechBubble = '¡Socorro! ¡La sombra me atrapa!';
               target.speechTimerMs = 3500;
 
@@ -415,7 +485,7 @@ export function updatePredators(
                   tick: world.currentTick,
                   category: 'death',
                   title: 'Presa de la sombra',
-                  description: `${target.name} sucumbió al acecho de ${p.name} en ${p.biome}.`,
+                  description: `${target.name} sucumbió al acecho de ${p.name} en ${BIOME_MAP[p.biome]?.nameEs ?? p.biome}.`,
                   biome: p.biome,
                   x: p.x,
                   y: p.y,
@@ -425,6 +495,10 @@ export function updatePredators(
                 });
               }
             }
+          } else if (onCooldown) {
+            // Circling at a distance while recovering from the last clash
+            p.vx *= 0.98;
+            p.vy *= 0.98;
           } else {
             // Chase target
             const stalkSpeed = isNight ? 68 : 50;

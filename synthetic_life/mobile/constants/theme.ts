@@ -184,6 +184,14 @@ export const ACTIVITY_META: Record<
   meditating: { labelEs: 'Meditación profunda', shortEs: 'Medita', color: '#E879F9', icon: 'sparkles' },
 };
 
+export function activityLabelEs(activity?: ActivityType | string | null): string {
+  if (!activity) return ACTIVITY_META.wandering.labelEs;
+  if (activity in ACTIVITY_META) {
+    return ACTIVITY_META[activity as ActivityType].labelEs;
+  }
+  return String(activity);
+}
+
 export const LIFE_STAGE_META: Record<
   LifeStage,
   { labelEs: string; color: string }

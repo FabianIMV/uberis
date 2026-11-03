@@ -44,6 +44,18 @@ npm run update:main
 
 ---
 
+## Versión Web (Skia/CanvasKit)
+
+```bash
+cd ~/Documents/fmrepos/uberis/synthetic_life/mobile
+npm install   # el postinstall copia canvaskit.wasm a public/
+npx expo start --web
+```
+
+`index.web.js` carga CanvasKit (WASM) antes de montar Expo Router, y `web.output` es `single` porque Skia no puede renderizar en SSR.
+
+---
+
 ## Verificación Automatizada
 
 ```bash

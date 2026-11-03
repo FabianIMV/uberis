@@ -274,8 +274,12 @@ export interface Predator {
   maxHp: number;
   hunger: number;
   biome: BiomeId;
-  state: 'prowling' | 'stalking' | 'resting' | 'repelled';
+  state: 'prowling' | 'stalking' | 'resting' | 'repelled' | 'banished';
   targetEntityId: number | null;
+  /** Seconds until the predator may strike / re-target again (set after attacks and repulsions) */
+  cooldownSec?: number;
+  /** Seconds until a banished (hp <= 0) predator re-coalesces from the shadows */
+  respawnInSec?: number;
 }
 
 export type TechId =

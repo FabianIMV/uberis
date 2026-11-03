@@ -20,6 +20,7 @@ import {
   generateLexiconWord,
 } from '../engine/cognition';
 import { BIOMES, getBiomeAt } from '../engine/biomes';
+import { updatePredators } from '../engine/ecology';
 import { WORLD_HEIGHT, WORLD_WIDTH, Genome, Entity } from '../engine/types';
 
 function assert(condition: boolean, message: string): void {
@@ -231,6 +232,58 @@ async function runVerification() {
   console.log(`  Sample Life Meaning: "${finalMsg.lifeMeaning}"`);
   console.log(`  Sample Myth: [${myth.topic}] "${myth.belief}"`);
   console.log('  ✅ Poetic Spanish synthesis verified.\n');
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // TEST 8: Umbra Predators — strike cooldown, death bookkeeping & banishment
+  // ──────────────────────────────────────────────────────────────────────────
+  console.log('🔹 Test 8: Umbra Predator Balance & Bookkeeping');
+  {
+    const psim = new Simulation();
+    const pstate = psim.getState();
+    const prey = pstate.entities[0];
+    const umbra = pstate.predators[0];
+    // Isolate the prey far from every other being and structure
+    for (const other of pstate.entities) {
+      if (other.id !== prey.id) { other.x = 100; other.y = 100; }
+    }
+    pstate.structures.length = 0;
+    prey.x = 1300; prey.y = 1000; prey.health = 100;
+    prey.genome.aggression = 0.1;
+    umbra.x = 1310; umbra.y = 1000; umbra.hunger = 90;
+    umbra.state = 'stalking'; umbra.targetEntityId = prey.id; umbra.cooldownSec = 0;
+
+    // 10 frames at 60fps inside strike range: only ONE strike may land
+    for (let f = 0; f < 10; f++) {
+      umbra.x = prey.x + 5; umbra.y = prey.y;
+      updatePredators([umbra], pstate.entities, pstate.structures, 1 / 60, pstate.world);
+    }
+    assert(prey.health >= 45 && prey.health <= 65, `Single strike per cooldown (health=${prey.health.toFixed(1)})`);
+    assert(prey.isAlive, 'Prey survives the first strike');
+
+    // Lethal strike via the full engine path must record diedAtTick, totalDeaths & testament
+    const deathsBefore = pstate.world.totalDeaths;
+    prey.health = 1;
+    umbra.cooldownSec = 0;
+    umbra.state = 'stalking'; umbra.targetEntityId = prey.id;
+    umbra.x = prey.x + 5; umbra.y = prey.y;
+    psim.stepFrame(1 / 60);
+    assert(!prey.isAlive, 'Prey killed by Umbra');
+    assert(prey.diedAtTick !== null, 'Predator death records diedAtTick');
+    assert(prey.finalMessage !== null, 'Predator death produces a final testament');
+    assert(pstate.world.totalDeaths === deathsBefore + 1, 'Predator death counted in totalDeaths');
+
+    // Banishment & re-coalescence
+    umbra.hp = 0;
+    updatePredators([umbra], pstate.entities, pstate.structures, 1 / 60, pstate.world);
+    assert((umbra.state as string) === 'banished', 'Defeated Umbra is banished');
+    const bx = umbra.x;
+    updatePredators([umbra], pstate.entities, pstate.structures, 1, pstate.world);
+    assert(umbra.x === bx && umbra.hp === 0, 'Banished Umbra is inert');
+    umbra.respawnInSec = 0.01;
+    updatePredators([umbra], pstate.entities, pstate.structures, 1 / 60, pstate.world);
+    assert((umbra.state as string) === 'prowling' && umbra.hp === umbra.maxHp, 'Umbra re-coalesces at full strength');
+  }
+  console.log('  ✅ Predator cooldowns, death bookkeeping & banishment passed.\n');
 
   console.log('✨ [ALL VERIFICATION CHECKS PASSED - 100% GREEN] ✨\n');
 }

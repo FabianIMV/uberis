@@ -31,6 +31,7 @@ import {
 } from './types';
 import {
   BIOMES,
+  BIOME_MAP,
   ERA_NAMES,
   getBiomeAt,
   getBiomeEffectiveTemperature,
@@ -682,6 +683,30 @@ export class Simulation implements ISimulationController {
     for (const ev of predResult.liveEvents) {
       this.emitEvent(ev);
     }
+
+    // Predator kills go through the same death bookkeeping as natural deaths
+    for (const casualtyId of predResult.casualties) {
+      const victim = this.state.entities.find(ent => ent.id === casualtyId);
+      if (victim && victim.diedAtTick === null) {
+        this.finalizePredatorDeath(victim);
+      }
+    }
+  }
+
+  private finalizePredatorDeath(e: Entity): void {
+    const world = this.state.world;
+    e.isAlive = false;
+    e.health = 0;
+    e.diedAtTick = world.currentTick;
+    world.totalDeaths++;
+    e.finalMessage = generateFinalMessage(e, 'el acecho de una Umbra');
+
+    const tribe = this.state.tribes.find(t => t.id === e.tribeId) || null;
+    if (e.lifeStage === 'elder' || (tribe && tribe.unlockedTechs.includes('symbolic_script'))) {
+      const memorial = erectMemorialStela(e, tribe, world);
+      if (memorial) this.state.structures.push(memorial);
+    }
+    this.notifySubscribers();
   }
 
   // ─── DISCRETE ECOLOGICAL / COGNITIVE TICK ─────────────────────────────────
@@ -1045,6 +1070,9 @@ export class Simulation implements ISimulationController {
       const e = living[i];
       if (!e.isAlive) continue;
 
+      // Keep the declared purpose in sync with what the creature is actually doing
+      e.currentGoal = e.activity;
+
       // Generate a new thought every ~3 ticks per entity
       if (world.currentTick % 3 === (e.id % 3)) {
         const thoughtObj = generateThought(e, world, living, structures);
@@ -1190,6 +1218,7 @@ export class Simulation implements ISimulationController {
     const x = Math.max(50, Math.min(WORLD_WIDTH - 50, worldX));
     const y = Math.max(50, Math.min(WORLD_HEIGHT - 50, worldY));
     const biome = getBiomeAt(x, y);
+    const biomeName = BIOME_MAP[biome]?.nameEs ?? biome;
     const now = Date.now();
     const radius = 240;
 
@@ -1228,7 +1257,7 @@ export class Simulation implements ISimulationController {
           tick: this.state.world.currentTick,
           category: 'divine_intervention',
           title: 'Lluvia de Maná Dorado',
-          description: `Una bendición celeste colmó de sustento y vigor a las criaturas de ${biome}.`,
+          description: `Una bendición celeste colmó de sustento y vigor a las criaturas de ${biomeName}.`,
           biome,
           x,
           y,
@@ -1256,7 +1285,7 @@ export class Simulation implements ISimulationController {
           tick: this.state.world.currentTick,
           category: 'divine_intervention',
           title: 'Tormenta Fértil',
-          description: `Un aguacero vivificante refrescó los manantiales y colmó la sed en ${biome}.`,
+          description: `Un aguacero vivificante refrescó los manantiales y colmó la sed en ${biomeName}.`,
           biome,
           x,
           y,
@@ -1281,7 +1310,7 @@ export class Simulation implements ISimulationController {
           tick: this.state.world.currentTick,
           category: 'divine_intervention',
           title: 'Bendición Solar',
-          description: `Un resplandor ardiente disipó el frío y sanó los cuerpos heridos en ${biome}.`,
+          description: `Un resplandor ardiente disipó el frío y sanó los cuerpos heridos en ${biomeName}.`,
           biome,
           x,
           y,
@@ -1314,7 +1343,7 @@ export class Simulation implements ISimulationController {
           tick: this.state.world.currentTick,
           category: 'divine_intervention',
           title: 'Rayo Cósmico Evolutivo',
-          description: `Ondas mutágenas alteraron el código genético de ${mutatedIds.length} seres en ${biome}.`,
+          description: `Ondas mutágenas alteraron el código genético de ${mutatedIds.length} seres en ${biomeName}.`,
           biome,
           x,
           y,
@@ -1354,7 +1383,7 @@ export class Simulation implements ISimulationController {
           tick: this.state.world.currentTick,
           category: 'divine_intervention',
           title: 'Monolito Ancestral Erguido',
-          description: `Un monolito resonante descendió en ${biome}, irradiando sabiduría arcana.`,
+          description: `Un monolito resonante descendió en ${biomeName}, irradiando sabiduría arcana.`,
           biome,
           x,
           y,
@@ -1420,7 +1449,7 @@ export class Simulation implements ISimulationController {
           currentDesire: 'Conocer este mundo nuevo.',
           currentGoal: 'wandering',
           existentialStatement: 'Nací del aliento divino.',
-          memories: [`Fui engendrado por la chispa divina en ${biome}.`],
+          memories: [`Fui engendrado por la chispa divina en ${biomeName}.`],
           memoryArchive: [],
           beliefs: {},
           relationships: {},
@@ -1435,7 +1464,7 @@ export class Simulation implements ISimulationController {
           tick: this.state.world.currentTick,
           category: 'divine_intervention',
           title: 'Chispa de Génesis',
-          description: `Una nueva criatura, ${childName} (${species.speciesName}), nació del poder creador en ${biome}.`,
+          description: `Una nueva criatura, ${childName} (${species.speciesName}), nació del poder creador en ${biomeName}.`,
           biome,
           x,
           y,
@@ -1466,7 +1495,7 @@ export class Simulation implements ISimulationController {
           tick: this.state.world.currentTick,
           category: 'divine_intervention',
           title: 'Rayo Cataclísmico',
-          description: `Un trueno sobrecogedor estremeció ${biome}, castigando la tierra con fuego celeste.`,
+          description: `Un trueno sobrecogedor estremeció ${biomeName}, castigando la tierra con fuego celeste.`,
           biome,
           x,
           y,

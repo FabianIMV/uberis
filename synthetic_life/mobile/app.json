@@ -9,11 +9,6 @@
     "scheme": "uberis",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#040814",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#040814"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.fabianimv.uberis"
@@ -24,13 +19,22 @@
     },
     "web": {
       "bundler": "metro",
-      "output": "static"
+      "output": "single"
     },
     "plugins": [
       "expo-router",
       "expo-sqlite",
       "expo-audio",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#040814"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

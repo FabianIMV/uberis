@@ -13,6 +13,7 @@ import EnergyBar from '@/components/EnergyBar';
 import GenomeBar from '@/components/GenomeBar';
 import {
   ACTIVITY_META,
+  activityLabelEs,
   BIOME_META,
   COLORS,
   LIFE_STAGE_META,
@@ -282,7 +283,7 @@ export default function EntityDetailScreen() {
             {entity.currentGoal && (
               <View style={styles.goalCell}>
                 <Text style={styles.goalLabel}>Propósito actual</Text>
-                <Text style={styles.goalVal}>{entity.currentGoal}</Text>
+                <Text style={styles.goalVal}>{activityLabelEs(entity.currentGoal)}</Text>
               </View>
             )}
             {entity.currentDesire && (
@@ -317,7 +318,7 @@ export default function EntityDetailScreen() {
                     </View>
                     <Text style={styles.logThought}>“{log.thought}”</Text>
                     {log.action ? (
-                      <Text style={styles.logAction}>Acción: {log.action}</Text>
+                      <Text style={styles.logAction}>Acción: {activityLabelEs(log.action)}</Text>
                     ) : null}
                   </View>
                 );
