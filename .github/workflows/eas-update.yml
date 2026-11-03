@@ -17,7 +17,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: synthetic_life/mobile/package-lock.json
 
@@ -33,9 +33,13 @@ jobs:
           #   ANTHROPIC_API_KEY → your Anthropic key (sk-ant-...)
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: >
-          npx eas-cli@latest update
-          --branch main
-          --platform ios
-          --message "Deploy: ${{ github.event.head_commit.message || 'manual trigger' }}"
-          --non-interactive
+          # Pasado por env (no interpolado en el script) para que comillas,
+          # paréntesis o saltos de línea del commit no rompan el shell.
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message || 'manual trigger' }}
+        run: |
+          MSG="Deploy: $(printf '%s' "$COMMIT_MESSAGE" | head -n 1)"
+          npx eas-cli@latest update \
+            --branch main \
+            --platform ios \
+            --message "$MSG" \
+            --non-interactive
