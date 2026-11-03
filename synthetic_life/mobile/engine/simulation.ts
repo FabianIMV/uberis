@@ -1,1095 +1,1574 @@
 /**
- * Standalone simulation engine — runs entirely on the device.
- * No backend, no WebSocket. Ticks every 8 seconds.
- * State is persisted to AsyncStorage so the world keeps living between sessions.
+ * UBERIS v2.0 — Autonomous Artificial Life Simulation Core
+ *
+ * Implements the continuous 60fps 2D steering kinematics loop,
+ * scheduled ecological/cognitive ticks scaled by SimSpeed,
+ * homeostatic dynamics, speciation detection, divine interventions,
+ * and ancestral lineage tracking.
  */
+
 import {
-  SEED_GENOMES, SEED_NAMES,
-  getRandomName, createOffspringGenome, calculateEnergyDrain, shouldReproduce,
-  computeIntelligence, MAX_AGE_TICKS, ELDER_AGE_TICKS,
-} from './evolution'
+  ActivityType,
+  BiomeId,
+  CatchUpSummary,
+  DivineEffect,
+  DivinePowerId,
+  Entity,
+  GenerationSnapshot,
+  Genome,
+  ISimulationController,
+  LiveEvent,
+  Predator,
+  SimSettings,
+  SimSpeed,
+  SimState,
+  Structure,
+  Tribe,
+  WorldResource,
+  WorldState,
+  WORLD_HEIGHT,
+  WORLD_WIDTH,
+} from './types';
 import {
-  ZONES, ZONE_NAMES, WORLD_EVENTS, shouldFireWorldEvent, getWeightedEvent,
-} from './world'
-import { think, generateDyingMessage, generateEncounter, consolidateMemories } from './brain'
-import { persistState, loadPersistedState } from './persistence'
+  BIOMES,
+  ERA_NAMES,
+  getBiomeAt,
+  getBiomeEffectiveTemperature,
+  getGlobalTemperature,
+  getSeasonForDay,
+  getWeatherForDay,
+} from './biomes';
 import {
-  openDB,
-  dbInsertEntity, dbRecordDeath, dbInsertThought,
-  dbInsertWorldEvent, dbInsertEncounter,
-} from './database'
+  computeIntelligence,
+  crossoverAndMutate,
+  deriveMorphology,
+  deriveSpeciesInfo,
+  generateEntityName,
+  SEED_ARCHETYPES,
+} from './genome';
 import {
-  ZONE_STRUCTURE_TYPES, STRUCTURE_ENERGY_AURA,
-} from './world'
-import type {
-  Entity, WorldState, LiveEvent, ConsciousnessLog, FinalMessage, Structure, RelationshipEntry, ZoneDrift, WorldObject,
-} from './types'
+  consolidateMemories,
+  enrichThoughtWithClaude,
+  generateFinalMessage,
+  generateSpeech,
+  generateThought,
+} from './cognition';
+import {
+  createInitialPredators,
+  createInitialResources,
+  updatePredators,
+  updateResources,
+} from './ecology';
+import {
+  checkAutonomousBuilding,
+  checkTechnologicalDiscovery,
+  checkTribeFormation,
+  erectMemorialStela,
+} from './society';
+import {
+  DEFAULT_SETTINGS,
+  loadPersistedSimSettings,
+  loadPersistedSimState,
+  persistSimSettings,
+  persistSimState,
+} from './persistence';
 
-export interface SimState {
-  entities:     Entity[]
-  worldState:   WorldState
-  liveEvents:   LiveEvent[]
-  logs:         Record<number, ConsciousnessLog[]>  // id -> last 20 logs
-  structures:   Structure[]
-  worldObjects: WorldObject[]
-}
+let _entityIdCounter = 1;
+let _liveEventIdCounter = 1;
 
-export interface CatchUpSummary {
-  msAway:         number
-  ticksSimulated: number
-  births:         number
-  deaths:         number
-}
+export class Simulation implements ISimulationController {
+  private state!: SimState;
+  private settings: SimSettings = { ...DEFAULT_SETTINGS };
+  private speed: SimSpeed = 1;
+  private running = false;
+  private tickIntervalHandle: ReturnType<typeof setInterval> | null = null;
+  private subscribers = new Set<(state: SimState) => void>();
+  private eventListeners = new Set<(event: LiveEvent) => void>();
+  private catchUpSummary: CatchUpSummary | null = null;
+  private isProcessingTick = false;
 
-type Listener = (state: SimState) => void
-
-const TICK_INTERVAL_MS    = 8_000
-const MAX_POPULATION      = 20
-const THINK_EVERY_N_TICKS = 3
-const MAX_CATCHUP_TICKS   = 40
-const MEMORY_CONSOLIDATION_THRESHOLD = 18   // compress when memory exceeds this
-const MEMORY_CONSOLIDATION_EVERY     = 15   // check every N ticks per entity
-
-let _idCounter = 1
-let _logIdCounter = 1
-let _eventIdCounter = 1
-let _structIdCounter = 1
-let _wobjIdCounter = 1
-
-function nextId()      { return _idCounter++ }
-function nextLogId()   { return _logIdCounter++ }
-function nextEvId()    { return _eventIdCounter++ }
-function nextStructId(){ return _structIdCounter++ }
-function nextWobjId()  { return _wobjIdCounter++ }
-
-export class Simulation {
-  private state: SimState = {
-    entities:   [],
-    worldState: { current_tick: 0, total_births: 0, total_deaths: 0, cultural_beliefs: {}, zoneDrift: {} },
-    liveEvents: [],
-    logs:       {},
-    structures: [],
-    worldObjects: [],
+  constructor() {
+    this.initDefaultWorld();
   }
 
-  private timer: ReturnType<typeof setTimeout> | null = null
-  private running = false
-  private listeners = new Set<Listener>()
-  private _catchUpSummary: CatchUpSummary | null = null
-
-  // ── Public API ────────────────────────────────────────────────────────────
-
-  subscribe(fn: Listener) {
-    this.listeners.add(fn)
-    return () => this.listeners.delete(fn)
-  }
-
-  getState(): SimState { return this.state }
-
-  getCatchUpSummary(): CatchUpSummary | null { return this._catchUpSummary }
-  clearCatchUpSummary() { this._catchUpSummary = null }
-
-  async save(): Promise<void> {
-    await persistState(this.state)
-  }
-
-  async start() {
-    if (this.running) return
-    this.running = true
-
-    openDB().catch(() => {})
-
-    const saved = await loadPersistedState()
-    if (saved) {
-      const maxId = Math.max(0, ...saved.state.entities.map(e => e.id))
-      if (maxId >= _idCounter) _idCounter = maxId + 1
-
-      this._setState(saved.state)
-
-      const msAway       = Date.now() - saved.savedAt
-      const ticksMissed  = Math.floor(msAway / TICK_INTERVAL_MS)
-      const ticksToRun   = Math.min(ticksMissed, MAX_CATCHUP_TICKS)
-
-      if (ticksToRun > 0) {
-        const { births, deaths } = this._catchUp(ticksToRun)
-        this._catchUpSummary = { msAway, ticksSimulated: ticksToRun, births, deaths }
-      }
-
-      if (this.state.entities.filter(e => e.is_alive).length < 2) this._seed()
-      this._notify()
-    } else {
-      this._seed()
-    }
-
-    this._scheduleNext(0)
-  }
-
-  stop() {
-    this.running = false
-    if (this.timer) { clearTimeout(this.timer); this.timer = null }
-  }
-
-  feedEntity(id: number) {
-    this._mutateEntity(id, e => ({ energy: Math.min(100, e.energy + 25) }))
-    this._pushEvent({ type: 'entity_fed', name: this._findEntity(id)?.name ?? '', tick: this.state.worldState.current_tick })
-    this._notify()
-  }
-
-  bathEntity(id: number) {
-    this._mutateEntity(id, e => ({
-      emotional_state: { emotion: 'content', intensity: 0.7 },
-      energy: Math.min(100, e.energy + 5),
-      memory: [...e.memory, 'Me bañaron. El agua fresca calló el ruido dentro de mí.'].slice(-20),
-    }))
-    this._pushEvent({ type: 'entity_bathed', name: this._findEntity(id)?.name ?? '', tick: this.state.worldState.current_tick })
-    this._notify()
-  }
-
-  addPlayerStructure(type: string, zone: string, aura: number): number {
-    const id = -(Date.now() % 1_000_000)
-    const s: Structure = {
-      id, zone, type,
-      builder_id:   0,
-      builder_name: 'Player',
-      hp:           100,
-      energy_aura:  aura,
-      created_tick: this.state.worldState.current_tick,
-    }
-    this._setState({ structures: [...(this.state.structures ?? []), s] })
-    this._notify()
-    return id
-  }
-
-  removePlayerStructure(id: number) {
-    this._setState({ structures: (this.state.structures ?? []).filter(s => s.id !== id) })
-    this._notify()
-  }
-
-  // ── Init ─────────────────────────────────────────────────────────────────
-
-  private _seed() {
-    if (this.state.entities.filter(e => e.is_alive).length > 0) return
-    const zones = ZONE_NAMES
-    const entities: Entity[] = SEED_GENOMES.map((genome, i) => ({
-      id:                    nextId(),
-      name:                  SEED_NAMES[i],
-      generation:            0,
-      age_ticks:             0,
-      energy:                100,
-      genome,
-      emotional_state:       { emotion: 'wonder', intensity: 0.8 },
-      current_zone:          zones[i % zones.length],
-      is_alive:              true,
-      last_thought:          null,
-      current_desire:        null,
-      current_goal:          null,
-      existential_statement: null,
-      parent_a_id:           null,
-      parent_b_id:           null,
-      born_at:               new Date().toISOString(),
-      memory:                [],
-      memory_archive:        [],
-      beliefs:               { existence: 'I am. That is the first and most certain thing.' },
-      relationships:         {},
-      final_message:         null,
-      died_at_tick:          null,
-      resources:             { wood: 0 },
-    }))
-    this._setState({ entities })
-    this._initWorldObjects()
-    this._notify()
-    for (const e of entities) dbInsertEntity(e, 0).catch(() => {})
-  }
-
-  // ── World objects ─────────────────────────────────────────────────────────
-
-  private _initWorldObjects() {
-    const objs: WorldObject[] = []
-    // Garden: 4 apple trees, 2 bushes, 1 pond
-    const zones: [string, number, number, number][] = [
-      // [zone, trees, bushes, ponds]
-      ['Garden',  4, 2, 1],
-      ['Archive', 2, 1, 0],
-      ['Void',    1, 0, 1],
-      ['Storm',   1, 1, 0],
-    ]
-    const tick = this.state.worldState.current_tick
-    for (const [zone, trees, bushes, ponds] of zones) {
-      for (let i = 0; i < trees; i++) {
-        objs.push({ id: nextWobjId(), type: 'apple_tree', zone, x: (i+1)/(trees+1), y: 0.2 + Math.random()*0.4, apples: 3+Math.floor(Math.random()*3), max_apples: 5, hp: 100, created_tick: tick })
-      }
-      for (let i = 0; i < bushes; i++) {
-        objs.push({ id: nextWobjId(), type: 'bush', zone, x: (i+1)/(bushes+1)*0.8+0.1, y: 0.6+Math.random()*0.3, apples: 1+Math.floor(Math.random()*2), max_apples: 2, hp: 100, created_tick: tick })
-      }
-      for (let i = 0; i < ponds; i++) {
-        objs.push({ id: nextWobjId(), type: 'pond', zone, x: 0.3+Math.random()*0.4, y: 0.75+Math.random()*0.15, apples: 0, max_apples: 0, hp: 100, created_tick: tick })
-      }
-    }
-    this._setState({ worldObjects: objs })
-  }
-
-  private _tickWorldObjects(tick: number) {
-    const objs = (this.state.worldObjects ?? []).map(o => {
-      // Apple/bush regen every 12 ticks
-      if ((o.type === 'apple_tree' || o.type === 'bush') && tick % 12 === 0 && o.apples < o.max_apples) {
-        return { ...o, apples: Math.min(o.max_apples, o.apples + 1) }
-      }
-      // Logs decay hp over time
-      if (o.type === 'log') {
-        const hp = o.hp - 2
-        if (hp <= 0) return null  // log disappears
-        return { ...o, hp }
-      }
-      return o
-    }).filter(Boolean) as WorldObject[]
-    this._setState({ worldObjects: objs })
-  }
-
-  // ── Relationship helpers ──────────────────────────────────────────────────
-
-  private _updateRelationship(
-    entityA: Entity,
-    entityB: Entity,
-    result: {
-      relationship_a_to_b: string
-      relationship_b_to_a: string
-      relationship_intensity_change: number
-      a_memory: string
-      b_memory: string
-    },
-    tick: number,
-  ): void {
-    const intensityChange = result.relationship_intensity_change ?? 0
-
-    for (const [entity, other, valenceKey, memKey] of [
-      [entityA, entityB, 'relationship_a_to_b', 'a_memory'],
-      [entityB, entityA, 'relationship_b_to_a', 'b_memory'],
-    ] as [Entity, Entity, string, string][]) {
-      const rels = { ...(entity.relationships ?? {}) }
-      const key  = String(other.id)
-      const existing = rels[key] ?? { encounters: 0, intensity: 0.2, valence: 'neutral', name: other.name, last_tick: tick, key_memory: '' }
-      const newIntensity = Math.max(0, Math.min(1, (existing.intensity ?? 0.2) + intensityChange))
-
-      rels[key] = {
-        name:       other.name,
-        valence:    ((result as Record<string, string>)[valenceKey] ?? existing.valence ?? 'neutral') as RelationshipEntry['valence'],
-        intensity:  Math.round(newIntensity * 1000) / 1000,
-        encounters: (existing.encounters ?? 0) + 1,
-        last_tick:  tick,
-        key_memory: ((result as Record<string, string>)[memKey] ?? '').slice(0, 120),
-      }
-      entity.relationships = rels
-    }
-  }
-
-  // ── Silent catch-up (no Claude, pure logic) ───────────────────────────────
-
-  private _catchUp(ticksToRun: number): { births: number; deaths: number } {
-    let births = 0
-    let deaths = 0
-    const ws   = { ...this.state.worldState }
-    let alive  = this.state.entities.filter(e => e.is_alive).map(e => ({ ...e }))
-    const dead = this.state.entities.filter(e => !e.is_alive).map(e => ({ ...e }))
-
-    for (let t = 0; t < ticksToRun; t++) {
-      ws.current_tick += 1
-      const tick = ws.current_tick
-      const next: Entity[] = []
-
-      for (const e of alive) {
-        const zoneData = ZONES[e.current_zone] ?? ZONES.Garden
-        e.energy = Math.max(0, Math.min(100, e.energy + zoneData.energy_effect))
-        e.energy = Math.max(0, e.energy - calculateEnergyDrain(e))
-
-        if (e.age_ticks > ELDER_AGE_TICKS) {
-          const factor = (e.age_ticks - ELDER_AGE_TICKS) / (MAX_AGE_TICKS - ELDER_AGE_TICKS)
-          e.energy = Math.max(0, e.energy - factor * 2)
-        }
-
-        e.age_ticks += 1
-
-        if (e.age_ticks >= MAX_AGE_TICKS || e.energy <= 5) {
-          dead.push({
-            ...e, is_alive: false, died_at_tick: tick,
-            final_message: {
-              final_words:   e.age_ticks >= MAX_AGE_TICKS
-                ? 'Completé mi ciclo mientras el mundo dormía.'
-                : 'La energía se agotó. El mundo siguió sin mí.',
-              life_meaning:  `Existí ${e.age_ticks} momentos. Eso fue suficiente.`,
-              gift_to_world: 'El recuerdo de haber sido.',
-              final_emotion: 'paz',
-              at_peace:      true,
-            },
-          })
-          ws.total_deaths += 1
-          deaths++
-          continue
-        }
-
-        if (shouldClone(e) && alive.length + next.length < MAX_POPULATION) {
-          e.energy -= 30
-          const child: Entity = {
-            id: nextId(), name: getRandomName(),
-            generation: e.generation + 1, age_ticks: 0, energy: 70,
-            genome: createOffspringGenome(e.genome),
-            emotional_state: { emotion: 'wonder', intensity: 0.9 },
-            current_zone: e.current_zone, is_alive: true,
-            last_thought: null, current_desire: null, current_goal: null, existential_statement: null,
-            parent_a_id: e.id, parent_b_id: null,
-            born_at: new Date(Date.now() - (ticksToRun - t) * TICK_INTERVAL_MS).toISOString(),
-            memory: [`Nací de ${e.name} mientras el mundo dormía.`],
-            memory_archive: [],
-            beliefs: { origin: `Vengo de ${e.name}.` },
-            relationships: {
-              [String(e.id)]: { name: e.name, valence: 'family', intensity: 0.8, encounters: 0, last_tick: tick, key_memory: `Nací de ${e.name}` },
-            },
-            final_message: null, died_at_tick: null,
-          }
-          // Parent knows offspring
-          const parentRels = { ...(e.relationships ?? {}) }
-          parentRels[String(child.id)] = { name: child.name, valence: 'family', intensity: 0.9, encounters: 0, last_tick: tick, key_memory: `Traje ${child.name} al mundo` }
-          e.relationships = parentRels
-
-          next.push(child)
-          ws.total_births += 1
-          births++
-        }
-
-        next.push(e)
-      }
-
-      // Sexual reproduction
-      if (next.length >= 2 && next.length < MAX_POPULATION && Math.random() < 0.08) {
-        const pool = next.filter(e => e.energy > 65)
-        if (pool.length >= 2) {
-          const a = pool[Math.floor(Math.random() * pool.length)]
-          const b = pool.filter(e => e.id !== a.id)[0]
-          if (b && shouldReproduce(a, b)) {
-            const child: Entity = {
-              id: nextId(), name: getRandomName(),
-              generation: Math.max(a.generation, b.generation) + 1,
-              age_ticks: 0, energy: 70,
-              genome: createOffspringGenome(a.genome, b.genome),
-              emotional_state: { emotion: 'wonder', intensity: 0.9 },
-              current_zone: a.current_zone, is_alive: true,
-              last_thought: null, current_desire: null, current_goal: null, existential_statement: null,
-              parent_a_id: a.id, parent_b_id: b.id,
-              born_at: new Date(Date.now() - (ticksToRun - t) * TICK_INTERVAL_MS).toISOString(),
-              memory: [`Nací de ${a.name} y ${b.name} mientras el mundo dormía.`],
-              memory_archive: [],
-              beliefs: { origin: `Vengo de ${a.name} y ${b.name}.` },
-              relationships: {
-                [String(a.id)]: { name: a.name, valence: 'family', intensity: 0.8, encounters: 0, last_tick: tick, key_memory: `Nací de ${a.name}` },
-                [String(b.id)]: { name: b.name, valence: 'family', intensity: 0.8, encounters: 0, last_tick: tick, key_memory: `Nací de ${b.name}` },
-              },
-              final_message: null, died_at_tick: null,
-            }
-            ws.total_births += 1
-            births++
-            next.push(child)
-          }
-        }
-      }
-
-      alive = next
-      if (alive.length === 0) break
-    }
-
-    this._setState({
-      entities:   [...alive, ...dead],
-      worldState: ws,
-      liveEvents: [],
-      logs:       this.state.logs,
-    })
-
-    return { births, deaths }
-  }
-
-  // ── Tick scheduling ───────────────────────────────────────────────────────
-
-  private _scheduleNext(delay = TICK_INTERVAL_MS) {
-    if (!this.running) return
-    this.timer = setTimeout(() => {
-      this._tick().finally(() => this._scheduleNext())
-    }, delay)
-  }
-
-  // ── Tick ──────────────────────────────────────────────────────────────────
-
-  private async _tick() {
-    const ws = { ...this.state.worldState }
-    ws.current_tick += 1
-    const tick = ws.current_tick
-
-    // Tick world objects (apple regen, log decay)
-    this._tickWorldObjects(tick)
-
-    let entities = this.state.entities.filter(e => e.is_alive)
-
-    if (entities.length === 0) {
-      this._seed()
-      this._setState({ worldState: ws })
-      this._notify()
-      return
-    }
-
-    // ── World event ─────────────────────────────────────────────────────────
-    let worldEventTemplate: typeof WORLD_EVENTS[0] | null = null
-    if (shouldFireWorldEvent()) {
-      worldEventTemplate = getWeightedEvent()
-      const wev = {
-        type:        'world_event',
-        description: worldEventTemplate.description,
-        zone:        worldEventTemplate.zone,
-        tick,
-      }
-      this._pushEvent(wev)
-      dbInsertWorldEvent({ ...wev, id: 0 }).catch(() => {})
-    }
-
-    // ── Apply structure energy auras ────────────────────────────────────────
-    let structures = [...(this.state.structures ?? [])]
-    for (const entity of entities) {
-      const aura = structures
-        .filter(s => s.zone === entity.current_zone)
-        .reduce((sum, s) => sum + s.energy_aura, 0)
-      if (aura > 0) entity.energy = Math.min(100, entity.energy + aura)
-    }
-    structures = structures.filter(s => s.hp > 0)
-
-    // ── Process each entity in parallel ────────────────────────────────────
-    const results = await Promise.all(
-      entities.map(e => this._processEntity({ ...e }, tick, ws, worldEventTemplate, structures))
-    )
-    const updated = results.map(r => r.entity)
-    const clones  = results.flatMap(r => r.child ? [r.child] : [])
-
-    const alive = [...updated.filter(e => e.is_alive), ...clones]
-    const dead  = updated.filter(e => !e.is_alive)
-
-    // ── Grief (relationship-aware) ──────────────────────────────────────────
-    for (const d of dead) {
-      for (const a of alive) {
-        const rel = (a.relationships ?? {})[String(d.id)]
-        const knewThem = rel || a.memory.some(m => m.includes(d.name))
-        if (!knewThem) continue
-
-        const bondIntensity = rel?.intensity ?? 0.3
-        const griefMultiplier = 1.0 + bondIntensity
-        a.energy = Math.max(0, a.energy - a.genome.empathy * 10 * griefMultiplier)
-        a.emotional_state = { emotion: 'grief', intensity: Math.min(1, a.genome.empathy + 0.3) }
-
-        const valence = rel?.valence
-        let griefMemory: string
-        if (valence === 'family')  griefMemory = `${d.name}, mi kin, se ha ido. La ausencia es una herida.`
-        else if (valence === 'friend') griefMemory = `${d.name}, mi amigo, se ha ido. Siento la pérdida profundamente.`
-        else if (valence === 'rival')  griefMemory = `${d.name} se ha ido. La ausencia de mi rival me deja inesperadamente vacío.`
-        else                           griefMemory = `${d.name} se ha ido. Siento su ausencia.`
-
-        a.memory = [...a.memory, griefMemory].slice(-20)
-        this._pushEvent({ type: 'entity_grief', griever: a.name, lost: d.name, relationship: valence ?? 'known', tick })
-      }
-    }
-
-    // ── Encounters ──────────────────────────────────────────────────────────
-    await this._handleEncounters(alive, tick, ws)
-
-    // ── Cultural beliefs ────────────────────────────────────────────────────
-    ws.cultural_beliefs = this._buildCulturalBeliefs(alive)
-
-    // ── Reproduction ────────────────────────────────────────────────────────
-    if (alive.length < MAX_POPULATION) {
-      await this._handleReproduction(alive, tick, ws)
-    }
-
-    // ── Auto-reseed ─────────────────────────────────────────────────────────
-    if (alive.length < 2) this._seed()
-
-    // ── Merge structures ────────────────────────────────────────────────────
-    for (const r of results) {
-      if (r.builtStructure) structures.push(r.builtStructure)
-      if (r.damagedStructureId != null) {
-        const s = structures.find(s => s.id === r.damagedStructureId)
-        if (s) s.hp = Math.max(0, s.hp - 30)
-      }
-    }
-    const finalStructures = structures.filter(s => s.hp > 0)
-
-    // ── Zone drift: decay + apply terraform results ─────────────────────────
-    const drift = { ...(ws.zoneDrift ?? {}) }
-    for (const zone of ZONE_NAMES) {
-      const d = drift[zone] ?? { energy_delta: 0, curiosity_delta: 0, hue_shift: 0 }
-      // Slow decay toward zero (0.98^tick means halved after ~34 ticks ≈ 4.5 min)
-      drift[zone] = {
-        energy_delta:    d.energy_delta    * 0.98,
-        curiosity_delta: d.curiosity_delta * 0.98,
-        hue_shift:       d.hue_shift       * 0.98,
-      }
-    }
-    for (const r of results) {
-      if (r.terraformZone && r.terraformDelta) {
-        const d = drift[r.terraformZone] ?? { energy_delta: 0, curiosity_delta: 0, hue_shift: 0 }
-        drift[r.terraformZone] = {
-          energy_delta:    Math.max(-1.5, Math.min(1.5, d.energy_delta    + r.terraformDelta.energy_delta)),
-          curiosity_delta: Math.max(-0.4, Math.min(0.4, d.curiosity_delta + r.terraformDelta.curiosity_delta)),
-          hue_shift:       Math.max(0,    Math.min(1,   d.hue_shift       + r.terraformDelta.hue_shift)),
-        }
-      }
-    }
-    ws.zoneDrift = drift
-
-    const allEntities = [
-      ...alive,
-      ...dead,
-      ...this.state.entities.filter(e => !e.is_alive && !dead.find(d => d.id === e.id)),
-    ]
-
-    // Trim dead entities to last 50 to keep state size bounded
-    const deadTrimmed = allEntities.filter(e => !e.is_alive)
-      .sort((a, b) => (b.died_at_tick ?? 0) - (a.died_at_tick ?? 0))
-      .slice(0, 50)
-    const trimmedEntities = [...allEntities.filter(e => e.is_alive), ...deadTrimmed]
-
-    this._setState({ entities: trimmedEntities, worldState: ws, structures: finalStructures })
-    this._pushEvent({ type: 'tick', tick, population: alive.length })
-    this._notify()
-    persistState(this.state).catch(() => {})
-  }
-
-  // ── Entity processing ──────────────────────────────────────────────────────
-
-  private async _processEntity(
-    e: Entity,
-    tick: number,
-    ws: WorldState,
-    worldEvent: typeof WORLD_EVENTS[0] | null,
-    structures: Structure[],
-  ): Promise<{ entity: Entity; child: Entity | null; builtStructure: Structure | null; damagedStructureId: number | null; terraformZone: string | null; terraformDelta: ZoneDrift | null }> {
-    const baseZone  = ZONES[e.current_zone] ?? ZONES.Garden
-    const drift     = ws.zoneDrift?.[e.current_zone] ?? { energy_delta: 0, curiosity_delta: 0, hue_shift: 0 }
-    const zoneData  = {
-      ...baseZone,
-      energy_effect:   baseZone.energy_effect   + drift.energy_delta,
-      curiosity_boost: baseZone.curiosity_boost  + drift.curiosity_delta,
-    }
-
-    e.energy += zoneData.energy_effect
-
-    if (worldEvent && (worldEvent.zone === null || worldEvent.zone === e.current_zone)) {
-      e.energy += worldEvent.effect.energy
-      e.emotional_state = { emotion: worldEvent.effect.emotion, intensity: 0.75 }
-      e.memory = [...e.memory, `A ${worldEvent.type} came — ${worldEvent.description.slice(0, 90)}`].slice(-20)
-    }
-
-    const drain = calculateEnergyDrain(e)
-    e.energy = Math.max(0, Math.min(100, e.energy - drain))
-
-    if (e.age_ticks > ELDER_AGE_TICKS) {
-      const ageFactor = (e.age_ticks - ELDER_AGE_TICKS) / (MAX_AGE_TICKS - ELDER_AGE_TICKS)
-      e.energy = Math.max(0, e.energy - ageFactor * 2)
-    }
-
-    e.age_ticks += 1
-
-    // ── Memory consolidation ───────────────────────────────────────────────
-    if (tick % MEMORY_CONSOLIDATION_EVERY === e.id % MEMORY_CONSOLIDATION_EVERY) {
-      const mems = e.memory ?? []
-      if (mems.length >= MEMORY_CONSOLIDATION_THRESHOLD) {
-        const toCompress = mems.slice(0, 10)
-        const remaining  = mems.slice(10)
-        const compressed = await consolidateMemories(e, toCompress)
-        const archive = [...(e.memory_archive ?? []), ...compressed].slice(-20)
-        e.memory_archive = archive
-        e.memory = remaining
-      }
-    }
-
-    // ── Old-age death ─────────────────────────────────────────────────────
-    if (e.age_ticks >= MAX_AGE_TICKS) {
-      const msg = await generateDyingMessage(e)
-      e.is_alive      = false
-      e.final_message = msg
-      e.died_at_tick  = tick
-      ws.total_deaths += 1
-      const deathLog: ConsciousnessLog = {
-        id: nextLogId(), entity_id: e.id, tick,
-        thought: msg.final_words, action: 'die', action_target: null,
-        emotion: msg.final_emotion, emotion_intensity: 1.0,
-        timestamp: new Date().toISOString(),
-      }
-      this._appendLog(deathLog)
-      dbInsertThought(deathLog).catch(() => {})
-      dbRecordDeath(e, 'old_age').catch(() => {})
-      this._pushEvent({
-        type: 'entity_died', id: e.id, name: e.name,
-        age_ticks: e.age_ticks, final_words: msg.final_words,
-        life_meaning: msg.life_meaning, at_peace: msg.at_peace,
-        cause: 'old_age', tick,
-      })
-      return { entity: e, child: null, builtStructure: null, damagedStructureId: null, terraformZone: null, terraformDelta: null }
-    }
-
-    // ── Energy death ──────────────────────────────────────────────────────
-    if (e.energy <= 5) {
-      const msg = await generateDyingMessage(e)
-      e.is_alive      = false
-      e.final_message = msg
-      e.died_at_tick  = tick
-      ws.total_deaths += 1
-      const deathLog: ConsciousnessLog = {
-        id:                nextLogId(),
-        entity_id:         e.id,
-        tick,
-        thought:           msg.final_words,
-        action:            'die',
-        action_target:     null,
-        emotion:           msg.final_emotion,
-        emotion_intensity: 1.0,
-        timestamp:         new Date().toISOString(),
-      }
-      this._appendLog(deathLog)
-      dbInsertThought(deathLog).catch(() => {})
-      dbRecordDeath(e, 'energy').catch(() => {})
-      this._pushEvent({
-        type:        'entity_died',
-        id:          e.id,
-        name:        e.name,
-        age_ticks:   e.age_ticks,
-        final_words: msg.final_words,
-        life_meaning:msg.life_meaning,
-        at_peace:    msg.at_peace,
-        cause:       'energy',
-        tick,
-      })
-      return { entity: e, child: null, builtStructure: null, damagedStructureId: null, terraformZone: null, terraformDelta: null }
-    }
-
-    // ── Think ─────────────────────────────────────────────────────────────
-    const intel      = computeIntelligence(e)
-    const thinkEvery = intel > 60 ? 2 : THINK_EVERY_N_TICKS
-
-    let child: Entity | null = null
-    let builtStructure: Structure | null = null
-    let damagedStructureId: number | null = null
-    let terraformZone: string | null = null
-    let terraformDelta: ZoneDrift | null = null
-
-    const nearbyStructures = structures.filter(s => s.zone === e.current_zone)
-
-    if (tick % thinkEvery === e.id % thinkEvery) {
-      const t = await think(e, tick, ws.cultural_beliefs, nearbyStructures, this.state.worldObjects ?? [])
-      if (t) {
-        e.last_thought          = t.inner_monologue
-        e.emotional_state       = { emotion: t.emotion, intensity: t.emotion_intensity }
-        e.current_desire        = t.desire
-        e.existential_statement = t.existential_statement
-
-        // Update goal
-        if (t.goal_update) {
-          e.current_goal = t.goal_update
-        } else if (t.goal_status === 'achieved' || t.goal_status === 'abandoned') {
-          e.current_goal = null
-        }
-
-        // New belief
-        if (t.new_belief?.key) {
-          const beliefs = { ...e.beliefs, [t.new_belief.key]: t.new_belief.value }
-          const keys = Object.keys(beliefs)
-          if (keys.length > 15) delete beliefs[keys[0]]
-          e.beliefs = beliefs
-        }
-
-        // ── Execute action ────────────────────────────────────────────────
-        switch (t.action) {
-          case 'explore':
-            if (t.action_target && ZONES[t.action_target]) {
-              e.current_zone = t.action_target
-              e.energy = Math.max(0, e.energy - 3)
-              e.memory = [...e.memory, `Exploré hasta ${t.action_target}`].slice(-20)
-            }
-            break
-
-          case 'rest':
-            e.energy = Math.min(100, e.energy + 8)
-            break
-
-          case 'seek_food':
-            e.energy = Math.min(100, e.energy + 12)
-            e.memory = [...e.memory, 'Encontré alimento y me recuperé.'].slice(-20)
-            break
-
-          case 'pick_apple': {
-            const objs = this.state.worldObjects ?? []
-            const treeInZone = objs.find(o => o.zone === e.current_zone && (o.type === 'apple_tree' || o.type === 'bush') && o.apples > 0)
-            if (treeInZone) {
-              e.energy = Math.min(100, e.energy + 18)
-              const updated = objs.map(o => o.id === treeInZone.id ? { ...o, apples: o.apples - 1 } : o)
-              this._setState({ worldObjects: updated })
-              e.memory = [...e.memory, `Tomé una manzana del árbol. Dulce y real.`].slice(-20)
-              this._pushEvent({ type: 'pick_apple', entity: e.name, zone: e.current_zone, tick })
-            } else {
-              // No apples — fall back to rest
-              e.energy = Math.min(100, e.energy + 4)
-            }
-            break
-          }
-
-          case 'chop_tree': {
-            const objs = this.state.worldObjects ?? []
-            const tree = objs.find(o => o.zone === e.current_zone && o.type === 'apple_tree' && o.hp > 0)
-            if (tree && e.energy >= 10) {
-              e.energy -= 10
-              const newHp = tree.hp - 40
-              let updated: WorldObject[]
-              if (newHp <= 0) {
-                // Tree falls, becomes a log
-                const log: WorldObject = { id: nextWobjId(), type: 'log', zone: e.current_zone, x: tree.x, y: tree.y, apples: 0, max_apples: 0, hp: 80, created_tick: tick }
-                updated = objs.filter(o => o.id !== tree.id).concat(log)
-                // Entity gains wood
-                e.resources = { ...(e.resources ?? { wood: 0 }), wood: (e.resources?.wood ?? 0) + 2 }
-                e.memory = [...e.memory, `Talé un árbol. Ahora tengo madera. La destrucción también es creación.`].slice(-20)
-                this._pushEvent({ type: 'tree_chopped', entity: e.name, zone: e.current_zone, tick })
-              } else {
-                updated = objs.map(o => o.id === tree.id ? { ...o, hp: newHp } : o)
-                e.memory = [...e.memory, `Golpeé el árbol. Cruje pero resiste.`].slice(-20)
-              }
-              this._setState({ worldObjects: updated })
-            }
-            break
-          }
-
-          case 'build': {
-            const structType = t.action_target ?? (ZONE_STRUCTURE_TYPES[e.current_zone]?.[0])
-            if (structType && e.energy >= 15) {
-              e.energy -= 15
-              const aura = STRUCTURE_ENERGY_AURA[structType] ?? 1
-              builtStructure = {
-                id:           nextStructId(),
-                zone:         e.current_zone,
-                type:         structType,
-                builder_id:   e.id,
-                builder_name: e.name,
-                hp:           100,
-                energy_aura:  aura,
-                created_tick: tick,
-              }
-              e.memory = [...e.memory, `Construí ${structType} en ${e.current_zone}.`].slice(-20)
-              this._pushEvent({
-                type: 'structure_built', builder: e.name,
-                structure: structType, zone: e.current_zone, aura, tick,
-              })
-            }
-            break
-          }
-
-          case 'destroy': {
-            const targets = nearbyStructures.filter(s => s.builder_id !== e.id)
-            const victim = t.action_target
-              ? (targets.find(s => s.type === t.action_target) ?? targets[0])
-              : targets.sort((a, b) => a.hp - b.hp)[0]
-            if (victim) {
-              e.energy = Math.max(0, e.energy - 5)
-              damagedStructureId = victim.id
-              const demolished = victim.hp - 30 <= 0
-              e.memory = [...e.memory,
-                demolished
-                  ? `Destruí completamente ${victim.type} de ${victim.builder_name}.`
-                  : `Dañé ${victim.type} de ${victim.builder_name} (${victim.hp - 30} HP restante).`
-              ].slice(-20)
-              this._pushEvent({
-                type: 'structure_damaged', attacker: e.name,
-                structure: victim.type, builder: victim.builder_name,
-                demolished, zone: e.current_zone, tick,
-              })
-            }
-            break
-          }
-
-          case 'clone': {
-            const canClone = e.energy >= 85 && e.age_ticks >= 8
-            if (canClone) {
-              e.energy -= 35
-              child = this._createOffspring(e, null, tick, ws)
-              e.memory = [...e.memory, `Me cloné. ${child.name} nació de mí.`].slice(-20)
-            }
-            break
-          }
-
-          case 'terraform': {
-            if (e.energy >= 20 && e.genome.creativity > 0.6) {
-              e.energy -= 20
-              const target = t.action_target ?? 'energy_up'
-              const delta: ZoneDrift = { energy_delta: 0, curiosity_delta: 0, hue_shift: 0.08 }
-              if (target === 'energy_up')       { delta.energy_delta    =  0.20; delta.hue_shift = 0.06 }
-              else if (target === 'energy_down'){ delta.energy_delta    = -0.15; delta.hue_shift = 0.04 }
-              else if (target === 'curiosity_up'){ delta.curiosity_delta =  0.10; delta.hue_shift = 0.05 }
-              else if (target === 'mood_shift')  { delta.curiosity_delta = -0.05; delta.energy_delta = 0.08 }
-              terraformZone  = e.current_zone
-              terraformDelta = delta
-              e.memory = [...e.memory, `Terraformé ${e.current_zone}. Lo moldeo con mi voluntad.`].slice(-20)
-              this._pushEvent({ type: 'terraform', entity: e.name, zone: e.current_zone, target, tick })
-            }
-            break
-          }
-
-          default:
-            break
-        }
-
-        e.memory = [...e.memory, `Pensé: ${e.last_thought?.slice(0, 100)}`].slice(-20)
-
-        const tLog: ConsciousnessLog = {
-          id:                nextLogId(),
-          entity_id:         e.id,
-          tick,
-          thought:           e.last_thought ?? '',
-          action:            t.action,
-          action_target:     t.action_target,
-          emotion:           t.emotion,
-          emotion_intensity: t.emotion_intensity,
-          timestamp:         new Date().toISOString(),
-        }
-        this._appendLog(tLog)
-        dbInsertThought(tLog).catch(() => {})
-
-        this._pushEvent({
-          type:                  'entity_thought',
-          id:                    e.id,
-          name:                  e.name,
-          thought:               e.last_thought,
-          emotion:               e.emotional_state,
-          action:                t.action,
-          zone:                  e.current_zone,
-          existential_statement: e.existential_statement,
-          current_goal:          e.current_goal,
-          relationships:         e.relationships,
-          tick,
-        })
-      }
-    }
-
-    return { entity: e, child, builtStructure, damagedStructureId, terraformZone, terraformDelta }
-  }
-
-  // ── Encounters ─────────────────────────────────────────────────────────────
-
-  private async _handleEncounters(
-    alive: Entity[],
-    tick: number,
-    ws: WorldState,
-  ): Promise<void> {
-    const byZone: Record<string, Entity[]> = {}
-    for (const e of alive) {
-      const z = e.current_zone || 'Garden'
-      ;(byZone[z] ??= []).push(e)
-    }
-
-    for (const [zone, group] of Object.entries(byZone)) {
-      if (group.length < 2 || Math.random() > 0.30) continue
-      const idxA = Math.floor(Math.random() * group.length)
-      let idxB = idxA
-      while (idxB === idxA) idxB = Math.floor(Math.random() * group.length)
-      const a = group[idxA], b = group[idxB]
-
-      // Determine prior relationship label
-      const relAtoB = (a.relationships ?? {})[String(b.id)]
-      let prior: string
-      if (relAtoB?.valence === 'family') prior = 'family'
-      else if (relAtoB?.valence === 'friend') prior = 'friends'
-      else if (relAtoB?.valence === 'rival') prior = 'rivals'
-      else if (relAtoB) prior = 'acquaintances'
-      else prior = 'strangers'
-
-      const result = await generateEncounter(a, b, zone, prior)
-      if (!result) continue
-
-      a.energy = Math.max(0, Math.min(100, a.energy + result.energy_change_a))
-      b.energy = Math.max(0, Math.min(100, b.energy + result.energy_change_b))
-      if (result.a_memory) a.memory = [...a.memory, `Met ${b.name}: ${result.a_memory}`].slice(-20)
-      if (result.b_memory) b.memory = [...b.memory, `Met ${a.name}: ${result.b_memory}`].slice(-20)
-
-      // Update persistent relationships
-      this._updateRelationship(a, b, result, tick)
-
-      this._pushEvent({
-        type:     'encounter',
-        entity_a: { id: a.id, name: a.name },
-        entity_b: { id: b.id, name: b.name },
-        outcome:  result.outcome,
-        dialogue: result.dialogue,
-        zone,
-        tick,
-        relationship_a_to_b: result.relationship_a_to_b,
-        relationship_b_to_a: result.relationship_b_to_a,
-      })
-
-      dbInsertEncounter(
-        tick, a.id, a.name, b.id, b.name,
-        result.outcome, result.dialogue, zone,
-      ).catch(() => {})
-
-      if (result.outcome === 'reproduction' && alive.length < MAX_POPULATION) {
-        if (shouldReproduce(a, b)) {
-          const child = this._createOffspring(a, b, tick, ws)
-          alive.push(child)
-        }
-      }
-    }
-  }
-
-  private _handleReproduction(alive: Entity[], tick: number, ws: WorldState): Promise<void> {
-    return this._handleAsexualReproduction(alive, tick, ws)
-  }
-
-  private async _handleAsexualReproduction(alive: Entity[], tick: number, ws: WorldState): Promise<void> {
-    for (const entity of alive) {
-      if (entity.energy > 80 && tick % 20 === entity.id % 20) {
-        if (Math.random() < 0.08) {
-          const child = this._createOffspring(entity, null, tick, ws)
-          alive.push(child)
-          break
-        }
-      }
-    }
-  }
-
-  private _createOffspring(parentA: Entity, parentB: Entity | null, tick: number, ws: WorldState): Entity {
-    const genome = createOffspringGenome(parentA.genome, parentB?.genome)
-    const name   = getRandomName()
-    const gen    = Math.max(parentA.generation, parentB?.generation ?? 0) + 1
-
-    const birthMemory = parentB
-      ? `I was born of ${parentA.name} and ${parentB.name}`
-      : `I emerged from ${parentA.name} alone`
-
-    // Seed family relationships for offspring
-    const initialRels: Record<string, RelationshipEntry> = {
-      [String(parentA.id)]: {
-        name: parentA.name, valence: 'family', intensity: 0.8,
-        encounters: 0, last_tick: tick, key_memory: birthMemory,
+  // ─── INITIALIZATION & LIFECYCLE ───────────────────────────────────────────
+
+  private initDefaultWorld(customSeed = 42): void {
+    const eraName = ERA_NAMES[0];
+    const season = 'spring';
+    const weather = 'clear';
+    const dayPhase = 0.20;
+    const globalTemperature = getGlobalTemperature(season, weather, dayPhase);
+
+    const world: WorldState = {
+      seed: customSeed,
+      eraName,
+      currentTick: 0,
+      dayCount: 0,
+      dayPhase,
+      season,
+      weather,
+      globalTemperature,
+      totalBirths: 8,
+      totalDeaths: 0,
+      totalSpeciations: 8,
+      culturalBeliefs: {
+        eden: {},
+        lagoon: {},
+        steppe: {},
+        archive: {},
+        ashlands: {},
+        abyss: {},
       },
+      historySnapshots: [],
+    };
+
+    // Spawn 8 Genesis founding entities
+    const entities: Entity[] = SEED_ARCHETYPES.map((arch, idx) => {
+      const id = _entityIdCounter++;
+      const biomeObj = BIOMES.find(b => b.id === arch.currentBiome) || BIOMES[0];
+      // Organic spawn jitter near biome center
+      const angle = (idx / SEED_ARCHETYPES.length) * Math.PI * 2;
+      const dist = 70 + (idx % 3) * 40;
+      const x = Math.round(biomeObj.centerX + Math.cos(angle) * dist);
+      const y = Math.round(biomeObj.centerY + Math.sin(angle) * dist);
+
+      const morphology = deriveMorphology(arch.genome);
+      const ent: Entity = {
+        id,
+        name: arch.name,
+        speciesId: arch.speciesId,
+        speciesName: arch.speciesName,
+        tribeId: null,
+        generation: 0,
+        ageTicks: 25,
+        maxAgeTicks: 210 + Math.round(arch.genome.survivalDrive * 80),
+        lifeStage: 'adult',
+
+        x,
+        y,
+        vx: (Math.random() - 0.5) * 15,
+        vy: (Math.random() - 0.5) * 15,
+        heading: Math.random() * Math.PI * 2,
+        targetX: null,
+        targetY: null,
+        currentBiome: arch.currentBiome,
+        activity: 'wandering',
+
+        energy: 88,
+        hydration: 88,
+        health: 100,
+        warmth: 85,
+        stamina: 95,
+        intelligence: 0.35,
+
+        genome: arch.genome,
+        morphology,
+        emotionalState: {
+          emotion: arch.emotion,
+          intensity: 0.75,
+        },
+        inventory: {
+          food: 10,
+          water: 10,
+          wood: 0,
+          stone: 0,
+          crystal: 0,
+          herbs: 0,
+        },
+
+        isAlive: true,
+        reproductionCooldown: 12,
+        gestationTicks: 0,
+        parentAId: null,
+        parentBId: null,
+        childrenIds: [],
+        bornAtTick: 0,
+        bornAtIso: new Date().toISOString(),
+        diedAtTick: null,
+
+        lastThought: arch.existentialStatement,
+        speechBubble: null,
+        speechTimerMs: 0,
+        currentDesire: 'Explorar y afianzar la vida en este territorio.',
+        currentGoal: 'foraging',
+        existentialStatement: arch.existentialStatement,
+        memories: [`Desperté en ${biomeObj.nameEs} bajo el cielo primordial.`],
+        memoryArchive: [],
+        beliefs: {},
+        relationships: {},
+        finalMessage: null,
+      };
+
+      ent.intelligence = computeIntelligence(ent, 0, false);
+      return ent;
+    });
+
+    const resources = createInitialResources();
+    const predators = createInitialPredators();
+    const structures: Structure[] = [];
+    const tribes: Tribe[] = [];
+    const divineEffects: DivineEffect[] = [];
+
+    const genesisEvent: LiveEvent = {
+      id: _liveEventIdCounter++,
+      tick: 0,
+      category: 'birth',
+      title: 'El Génesis Primordial',
+      description: 'Ocho seres despiertan a través de los seis biomas del continente.',
+      biome: 'eden',
+      x: 1200,
+      y: 900,
+      important: true,
+      timestamp: new Date().toISOString(),
+    };
+
+    const logs: Record<number, any[]> = {};
+    for (const e of entities) {
+      logs[e.id] = [
+        {
+          id: 1,
+          entityId: e.id,
+          tick: 0,
+          thought: e.lastThought,
+          action: 'wandering',
+          emotion: e.emotionalState.emotion,
+          emotionIntensity: e.emotionalState.intensity,
+          timestamp: new Date().toISOString(),
+        },
+      ];
     }
-    if (parentB) {
-      initialRels[String(parentB.id)] = {
-        name: parentB.name, valence: 'family', intensity: 0.8,
-        encounters: 0, last_tick: tick, key_memory: birthMemory,
+
+    this.state = {
+      world,
+      biomes: BIOMES,
+      entities,
+      resources,
+      structures,
+      predators,
+      tribes,
+      liveEvents: [genesisEvent],
+      logs,
+      divineEffects,
+    };
+  }
+
+  public async start(): Promise<void> {
+    if (this.running) return;
+    this.running = true;
+
+    // Load persisted settings
+    this.settings = await loadPersistedSimSettings();
+
+    // Try loading saved state
+    const saved = await loadPersistedSimState();
+    if (saved && saved.state) {
+      this.state = saved.state;
+
+      // Ensure biomes array is up to date
+      this.state.biomes = BIOMES;
+
+      // Calculate offline catch-up ticks
+      const now = Date.now();
+      const msAway = now - saved.savedAt;
+      if (msAway > 12000) {
+        // 1 tick per 4 seconds of away time, capped at 35 ticks
+        const ticksToSimulate = Math.min(35, Math.floor(msAway / 4000));
+        let birthsBefore = this.state.world.totalBirths;
+        let deathsBefore = this.state.world.totalDeaths;
+        let techsBefore = this.state.tribes.reduce((s, t) => s + t.unlockedTechs.length, 0);
+
+        for (let i = 0; i < ticksToSimulate; i++) {
+          await this.processDiscreteTick();
+        }
+
+        this.catchUpSummary = {
+          msAway,
+          ticksSimulated: ticksToSimulate,
+          births: this.state.world.totalBirths - birthsBefore,
+          deaths: this.state.world.totalDeaths - deathsBefore,
+          discoveries:
+            this.state.tribes.reduce((s, t) => s + t.unlockedTechs.length, 0) - techsBefore,
+        };
       }
     }
 
-    const child: Entity = {
-      id:                    nextId(),
-      name,
-      generation:            gen,
-      age_ticks:             0,
-      energy:                70,
-      genome,
-      emotional_state:       { emotion: 'wonder', intensity: 0.9 },
-      current_zone:          parentA.current_zone,
-      is_alive:              true,
-      last_thought:          null,
-      current_desire:        null,
-      current_goal:          null,
-      existential_statement: null,
-      parent_a_id:           parentA.id,
-      parent_b_id:           parentB?.id ?? null,
-      born_at:               new Date().toISOString(),
-      memory:                [birthMemory],
-      memory_archive:        [],
-      beliefs:               { origin: parentB ? `I came from ${parentA.name} and ${parentB.name}` : `I came from ${parentA.name}` },
-      relationships:         initialRels,
-      final_message:         null,
-      died_at_tick:          null,
-    }
-    ws.total_births += 1
-
-    // Parents know their offspring
-    for (const parent of parentB ? [parentA, parentB] : [parentA]) {
-      const rels = { ...(parent.relationships ?? {}) }
-      rels[String(child.id)] = {
-        name: name, valence: 'family', intensity: 0.9,
-        encounters: 0, last_tick: tick, key_memory: `Traje ${name} al mundo`,
-      }
-      parent.relationships = rels
-    }
-
-    this._pushEvent({
-      type:       'entity_born',
-      name,
-      generation: gen,
-      parent_a:   parentA.name,
-      parent_b:   parentB?.name ?? null,
-      zone:       parentA.current_zone,
-      tick,
-    })
-
-    dbInsertEntity(child, tick).catch(() => {})
-
-    return child
+    this.rescheduleTickLoop();
   }
 
-  // ── Cultural beliefs ───────────────────────────────────────────────────────
+  public stop(): void {
+    this.running = false;
+    if (this.tickIntervalHandle) {
+      clearInterval(this.tickIntervalHandle);
+      this.tickIntervalHandle = null;
+    }
+  }
 
-  private _buildCulturalBeliefs(alive: Entity[]): Record<string, Record<string, string>> {
-    const counts: Record<string, Record<string, number>> = {}
-    const values: Record<string, Record<string, string>> = {}
-    const pop:    Record<string, number> = {}
+  public async resetWorld(customSeed?: number): Promise<void> {
+    this.initDefaultWorld(customSeed);
+    await persistSimState(this.state);
+    this.notifySubscribers();
+  }
 
-    for (const e of alive) {
-      const z = e.current_zone || 'Garden'
-      pop[z] = (pop[z] ?? 0) + 1
-      for (const [k, v] of Object.entries(e.beliefs)) {
-        ;(counts[z] ??= {})[k] = ((counts[z][k] ?? 0)) + 1
-        ;(values[z] ??= {})[k] = String(v)
+  public getState(): SimState {
+    return this.state;
+  }
+
+  public getSpeed(): SimSpeed {
+    return this.speed;
+  }
+
+  public setSpeed(speed: SimSpeed): void {
+    this.speed = speed;
+    this.rescheduleTickLoop();
+  }
+
+  private rescheduleTickLoop(): void {
+    if (this.tickIntervalHandle) {
+      clearInterval(this.tickIntervalHandle);
+      this.tickIntervalHandle = null;
+    }
+
+    if (!this.running || this.speed === 0) return;
+
+    // Base interval is 3500ms at 1x; scales with speed
+    const ms = Math.max(800, Math.round(3500 / this.speed));
+    this.tickIntervalHandle = setInterval(() => {
+      this.triggerCognitiveTick().catch(() => {});
+    }, ms);
+  }
+
+  public subscribe(listener: (state: SimState) => void): () => void {
+    this.subscribers.add(listener);
+    listener(this.state);
+    return () => this.subscribers.delete(listener);
+  }
+
+  public onEvent(listener: (event: LiveEvent) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
+
+  private notifySubscribers(): void {
+    for (const listener of this.subscribers) {
+      try {
+        listener(this.state);
+      } catch {
+        // Ignore subscriber errors
       }
     }
+  }
 
-    const cultural: Record<string, Record<string, string>> = {}
-    for (const [z, ks] of Object.entries(counts)) {
-      const p = pop[z] ?? 1
-      cultural[z] = {}
-      for (const [k, cnt] of Object.entries(ks)) {
-        if (cnt > p / 2) cultural[z][k] = values[z][k]
+  private emitEvent(event: LiveEvent): void {
+    this.state.liveEvents.unshift(event);
+    if (this.state.liveEvents.length > 80) {
+      this.state.liveEvents.length = 80;
+    }
+    for (const listener of this.eventListeners) {
+      try {
+        listener(event);
+      } catch {
+        // Ignore listener errors
       }
     }
-    return cultural
   }
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
+  // ─── 60FPS CONTINUOUS KINEMATICS & AUTONOMOUS STEERING ────────────────────
 
-  private _findEntity(id: number): Entity | undefined {
-    return this.state.entities.find(e => e.id === id)
+  public stepFrame(dtSeconds: number): void {
+    if (this.speed === 0 || dtSeconds <= 0) return;
+
+    // Limit dt to prevent tunneling after background sleep
+    const effectiveDt = Math.min(dtSeconds, 0.1) * this.speed;
+    const now = Date.now();
+    const world = this.state.world;
+
+    // 1. Advance diurnal cycle (120 seconds of real-time 1x = 1 full day)
+    world.dayPhase += effectiveDt / 120;
+    if (world.dayPhase >= 1.0) {
+      world.dayPhase -= 1.0;
+      world.dayCount++;
+      world.season = getSeasonForDay(world.dayCount);
+      world.weather = getWeatherForDay(world.dayCount, world.season, world.seed);
+      const eraIdx = Math.min(ERA_NAMES.length - 1, Math.floor(world.dayCount / 4));
+      world.eraName = ERA_NAMES[eraIdx];
+    }
+    world.globalTemperature = getGlobalTemperature(
+      world.season,
+      world.weather,
+      world.dayPhase
+    );
+
+    // 2. Clear expired speech bubbles & divine effects
+    for (const ent of this.state.entities) {
+      if (ent.speechTimerMs > 0) {
+        ent.speechTimerMs -= effectiveDt * 1000;
+        if (ent.speechTimerMs <= 0) {
+          ent.speechTimerMs = 0;
+          ent.speechBubble = null;
+        }
+      }
+    }
+
+    if (this.state.divineEffects.length > 0) {
+      this.state.divineEffects = this.state.divineEffects.filter(
+        eff => now - eff.createdAtMs < eff.durationMs
+      );
+    }
+
+    // 3. Autonomous Steering Kinematics for Living Entities
+    const livingEntities = this.state.entities.filter(e => e.isAlive);
+    const resources = this.state.resources;
+    const structures = this.state.structures;
+    const predators = this.state.predators;
+
+    for (let i = 0; i < livingEntities.length; i++) {
+      const e = livingEntities[i];
+      const senseDist = 160 + e.genome.senseGene * 240;
+      const baseMaxSpeed =
+        (38 + e.genome.speedGene * 44) *
+        (0.55 + 0.45 * (e.stamina / 100)) *
+        (0.60 + 0.40 * (e.health / 100));
+
+      let targetX = e.targetX;
+      let targetY = e.targetY;
+      let desiredSpeed = baseMaxSpeed;
+
+      // ── Priority A: Threat Evasion (Predators) ──
+      let nearestPredator: Predator | null = null;
+      let nearestPredDist = Number.MAX_VALUE;
+
+      for (let p = 0; p < predators.length; p++) {
+        const pred = predators[p];
+        const pdx = pred.x - e.x;
+        const pdy = pred.y - e.y;
+        const d = Math.sqrt(pdx * pdx + pdy * pdy);
+        if (d < senseDist && d < nearestPredDist) {
+          nearestPredDist = d;
+          nearestPredator = pred;
+        }
+      }
+
+      if (nearestPredator && nearestPredDist < 200) {
+        if (e.genome.aggression > 0.72 && e.lifeStage === 'adult' && e.health > 70) {
+          e.activity = 'defending';
+          targetX = nearestPredator.x;
+          targetY = nearestPredator.y;
+        } else {
+          // Flee in opposite direction
+          e.activity = 'fleeing';
+          const fleeX = e.x - (nearestPredator.x - e.x);
+          const fleeY = e.y - (nearestPredator.y - e.y);
+          targetX = fleeX;
+          targetY = fleeY;
+          desiredSpeed *= 1.35;
+          e.stamina = Math.max(5, e.stamina - 2.5 * effectiveDt);
+        }
+      }
+
+      // ── Priority B: Urgent Thirst ──
+      else if (e.hydration < 52) {
+        let bestSpring: WorldResource | null = null;
+        let bestDist = Number.MAX_VALUE;
+
+        for (let r = 0; r < resources.length; r++) {
+          const res = resources[r];
+          if (res.kind === 'water_spring' && res.amount > 5) {
+            const d = Math.hypot(res.x - e.x, res.y - e.y);
+            if (d < bestDist) {
+              bestDist = d;
+              bestSpring = res;
+            }
+          }
+        }
+
+        if (bestSpring) {
+          targetX = bestSpring.x;
+          targetY = bestSpring.y;
+          e.activity = 'drinking';
+
+          if (bestDist < 42) {
+            // Drink
+            e.hydration = Math.min(100, e.hydration + 26 * effectiveDt);
+            bestSpring.amount = Math.max(0, bestSpring.amount - 1.5 * effectiveDt);
+          }
+        }
+      }
+
+      // ── Priority C: Urgent Hunger ──
+      else if (e.energy < 58) {
+        let bestFood: { x: number; y: number; isGranary: boolean; granaryRef?: Structure } | null = null;
+        let bestDist = Number.MAX_VALUE;
+
+        // Check granaries first if in tribe
+        for (let s = 0; s < structures.length; s++) {
+          const st = structures[s];
+          if (st.kind === 'granary' && st.storedFood > 2) {
+            const d = Math.hypot(st.x - e.x, st.y - e.y);
+            if (d < bestDist) {
+              bestDist = d;
+              bestFood = { x: st.x, y: st.y, isGranary: true, granaryRef: st };
+            }
+          }
+        }
+
+        // Check trees/bushes/farms
+        for (let r = 0; r < resources.length; r++) {
+          const res = resources[r];
+          if ((res.kind === 'nectar_tree' || res.kind === 'berry_bush') && res.amount > 5) {
+            const d = Math.hypot(res.x - e.x, res.y - e.y);
+            if (d < bestDist) {
+              bestDist = d;
+              bestFood = { x: res.x, y: res.y, isGranary: false };
+            }
+          }
+        }
+
+        if (bestFood) {
+          targetX = bestFood.x;
+          targetY = bestFood.y;
+          e.activity = 'foraging';
+
+          if (bestDist < 42) {
+            e.energy = Math.min(100, e.energy + 22 * effectiveDt);
+            if (bestFood.isGranary && bestFood.granaryRef) {
+              bestFood.granaryRef.storedFood = Math.max(0, bestFood.granaryRef.storedFood - 1 * effectiveDt);
+            }
+          }
+        }
+      }
+
+      // ── Priority D: Hypothermia & Cold ──
+      else if (e.warmth < 44) {
+        let bestWarmth: { x: number; y: number } | null = null;
+        let bestDist = Number.MAX_VALUE;
+
+        for (let s = 0; s < structures.length; s++) {
+          const st = structures[s];
+          if (st.kind === 'campfire') {
+            const d = Math.hypot(st.x - e.x, st.y - e.y);
+            if (d < bestDist) {
+              bestDist = d;
+              bestWarmth = { x: st.x, y: st.y };
+            }
+          }
+        }
+
+        if (bestWarmth) {
+          targetX = bestWarmth.x;
+          targetY = bestWarmth.y;
+          e.activity = 'warming';
+          if (bestDist < 160) {
+            e.warmth = Math.min(100, e.warmth + 24 * effectiveDt);
+          }
+        }
+      }
+
+      // ── Priority E: Injury & Healing ──
+      else if (e.health < 50) {
+        const shelter = structures.find(s => s.kind === 'shelter');
+        if (shelter) {
+          targetX = shelter.x;
+          targetY = shelter.y;
+          e.activity = 'resting';
+          if (Math.hypot(shelter.x - e.x, shelter.y - e.y) < 140) {
+            e.health = Math.min(100, e.health + 12 * effectiveDt);
+          }
+        }
+      }
+
+      // ── Priority F: Courting Mates ──
+      else if (
+        e.lifeStage === 'adult' &&
+        e.energy > 72 &&
+        e.hydration > 72 &&
+        e.reproductionCooldown <= 0
+      ) {
+        const mate = livingEntities.find(
+          o =>
+            o.id !== e.id &&
+            o.lifeStage === 'adult' &&
+            o.reproductionCooldown <= 0 &&
+            Math.hypot(o.x - e.x, o.y - e.y) < senseDist
+        );
+        if (mate) {
+          targetX = mate.x;
+          targetY = mate.y;
+          e.activity = 'courting';
+        }
+      }
+
+      // ── Priority G: Tribal flocking or wandering ──
+      else {
+        const tribe = this.state.tribes.find(t => t.id === e.tribeId);
+        if (tribe && Math.hypot(tribe.homeX - e.x, tribe.homeY - e.y) > 280) {
+          targetX = tribe.homeX + (Math.random() - 0.5) * 80;
+          targetY = tribe.homeY + (Math.random() - 0.5) * 80;
+          e.activity = 'socializing';
+        } else if (targetX === null || targetY === null || Math.hypot(targetX - e.x, targetY - e.y) < 40) {
+          // Wander gently in current biome
+          const wanderAngle = Math.random() * Math.PI * 2;
+          const wanderDist = 80 + Math.random() * 120;
+          targetX = Math.max(100, Math.min(WORLD_WIDTH - 100, e.x + Math.cos(wanderAngle) * wanderDist));
+          targetY = Math.max(100, Math.min(WORLD_HEIGHT - 100, e.y + Math.sin(wanderAngle) * wanderDist));
+          e.activity = 'wandering';
+        }
+      }
+
+      e.targetX = targetX;
+      e.targetY = targetY;
+
+      // Kinematics integration toward target
+      if (targetX !== null && targetY !== null) {
+        const dx = targetX - e.x;
+        const dy = targetY - e.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist > 5) {
+          const desiredVx = (dx / dist) * desiredSpeed;
+          const desiredVy = (dy / dist) * desiredSpeed;
+
+          // Gentle steering acceleration
+          const steerX = desiredVx - e.vx;
+          const steerY = desiredVy - e.vy;
+          const maxForce = 90;
+          const steerLen = Math.sqrt(steerX * steerX + steerY * steerY);
+
+          if (steerLen > maxForce) {
+            e.vx += (steerX / steerLen) * maxForce * effectiveDt;
+            e.vy += (steerY / steerLen) * maxForce * effectiveDt;
+          } else {
+            e.vx += steerX * effectiveDt;
+            e.vy += steerY * effectiveDt;
+          }
+        }
+      }
+
+      // Damping friction
+      e.vx *= 0.94;
+      e.vy *= 0.94;
+
+      // Soft-containment boundary repelling forces (continent 2400x1800)
+      const margin = 100;
+      const repelForce = 140 * effectiveDt;
+      if (e.x < margin) e.vx += repelForce;
+      if (e.x > WORLD_WIDTH - margin) e.vx -= repelForce;
+      if (e.y < margin) e.vy += repelForce;
+      if (e.y > WORLD_HEIGHT - margin) e.vy -= repelForce;
+
+      // Position update
+      e.x += e.vx * effectiveDt;
+      e.y += e.vy * effectiveDt;
+
+      // Hard clamp safely within continent
+      e.x = Math.max(40, Math.min(WORLD_WIDTH - 40, e.x));
+      e.y = Math.max(40, Math.min(WORLD_HEIGHT - 40, e.y));
+
+      if (e.vx !== 0 || e.vy !== 0) {
+        e.heading = Math.atan2(e.vy, e.vx);
+      }
+      e.currentBiome = getBiomeAt(e.x, e.y);
+    }
+
+    // 4. Update shadow predators kinematics & clashes
+    const predResult = updatePredators(
+      predators,
+      this.state.entities,
+      structures,
+      effectiveDt,
+      world
+    );
+
+    for (const ev of predResult.liveEvents) {
+      this.emitEvent(ev);
+    }
   }
 
-  private _mutateEntity(id: number, fn: (e: Entity) => Partial<Entity>) {
-    this._setState({
-      entities: this.state.entities.map(e => e.id === id ? { ...e, ...fn(e) } : e),
-    })
+  // ─── DISCRETE ECOLOGICAL / COGNITIVE TICK ─────────────────────────────────
+
+  public async triggerCognitiveTick(): Promise<void> {
+    if (this.isProcessingTick) return;
+    this.isProcessingTick = true;
+    try {
+      await this.processDiscreteTick();
+      this.notifySubscribers();
+    } finally {
+      this.isProcessingTick = false;
+    }
   }
 
-  private _appendLog(log: ConsciousnessLog) {
-    const prev = this.state.logs[log.entity_id] ?? []
-    const next = [...prev, log].slice(-20)
-    this._setState({ logs: { ...this.state.logs, [log.entity_id]: next } })
+  private async processDiscreteTick(): Promise<void> {
+    const world = this.state.world;
+    world.currentTick++;
+
+    const living = this.state.entities.filter(e => e.isAlive);
+    const tribes = this.state.tribes;
+    const structures = this.state.structures;
+    const resources = this.state.resources;
+
+    // 1. Homeostatic Drain & Physical Aging
+    for (let i = 0; i < living.length; i++) {
+      const e = living[i];
+      e.ageTicks++;
+
+      if (e.reproductionCooldown > 0) {
+        e.reproductionCooldown--;
+      }
+
+      // Life stage transition
+      if (e.ageTicks <= 15) {
+        e.lifeStage = 'larva';
+      } else if (e.ageTicks <= 45) {
+        e.lifeStage = 'juvenile';
+      } else if (e.ageTicks <= 160) {
+        e.lifeStage = 'adult';
+      } else {
+        e.lifeStage = 'elder';
+      }
+
+      // Energy metabolic drain
+      const energyDrain =
+        (0.48 + e.morphology.bodyScale * 0.35 + e.genome.speedGene * 0.25) *
+        (1.15 - e.genome.survivalDrive * 0.32);
+      e.energy = Math.max(0, e.energy - energyDrain);
+
+      // Hydration drain
+      const heatPenalty = world.globalTemperature > 0.60 ? (world.globalTemperature - 0.60) * 1.8 : 0;
+      const hydrationDrain = 0.58 + heatPenalty;
+      e.hydration = Math.max(0, e.hydration - hydrationDrain);
+
+      // Warmth regulation
+      const biomeTemp = getBiomeEffectiveTemperature(e.currentBiome, world.globalTemperature);
+      const nearCampfire = structures.some(
+        s => s.kind === 'campfire' && Math.hypot(s.x - e.x, s.y - e.y) < s.auraRadius
+      );
+      if (nearCampfire) {
+        e.warmth = Math.min(100, e.warmth + 14);
+      } else {
+        const targetWarmth = biomeTemp * 100;
+        e.warmth += (targetWarmth - e.warmth) * 0.12;
+      }
+
+      // Health consequences
+      if (e.energy <= 0) e.health -= 8;
+      if (e.hydration <= 0) e.health -= 12;
+      if (e.warmth < 18) e.health -= 6;
+      if (e.energy > 60 && e.hydration > 60 && e.warmth > 45 && e.health < 100) {
+        e.health = Math.min(100, e.health + 4);
+      }
+
+      // Stamina regeneration
+      e.stamina = Math.min(100, e.stamina + 8);
+
+      // Intelligence recalculation
+      const tribeTechCount = tribes.find(t => t.id === e.tribeId)?.unlockedTechs.length || 0;
+      const nearMonolith = structures.some(
+        s => s.kind === 'monolith' && Math.hypot(s.x - e.x, s.y - e.y) < s.auraRadius
+      );
+      e.intelligence = computeIntelligence(e, tribeTechCount, nearMonolith);
+
+      // ── Natural & Deprivation Deaths ──
+      if (e.health <= 0 || e.ageTicks >= e.maxAgeTicks) {
+        e.isAlive = false;
+        e.diedAtTick = world.currentTick;
+        world.totalDeaths++;
+
+        let cause = 'vejez y plenitud de ciclos';
+        if (e.health <= 0) {
+          if (e.hydration <= 0) cause = 'deshidratación severa';
+          else if (e.energy <= 0) cause = 'inanición';
+          else if (e.warmth < 18) cause = 'hipotermia en la helada';
+          else cause = 'heridas graves y agotamiento';
+        }
+
+        e.finalMessage = generateFinalMessage(e, cause);
+
+        // Erect memorial if elder or member of clan with writing
+        const tribe = tribes.find(t => t.id === e.tribeId) || null;
+        if (e.lifeStage === 'elder' || (tribe && tribe.unlockedTechs.includes('symbolic_script'))) {
+          const memorial = erectMemorialStela(e, tribe, world);
+          if (memorial) structures.push(memorial);
+        }
+
+        this.emitEvent({
+          id: _liveEventIdCounter++,
+          tick: world.currentTick,
+          category: 'death',
+          title: 'Trascendencia de un ser',
+          description: `${e.name} (${e.speciesName}) partió a los ${e.ageTicks} ciclos por ${cause}.`,
+          biome: e.currentBiome,
+          x: e.x,
+          y: e.y,
+          entityIds: [e.id],
+          important: true,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+
+    // 2. Gestation & Births with Genetic Speciation Check
+    for (let i = 0; i < living.length; i++) {
+      const e = living[i];
+      if (!e.isAlive) continue;
+
+      if (e.gestationTicks > 0) {
+        e.gestationTicks--;
+        if (e.gestationTicks === 0) {
+          // Give birth!
+          const parentA = e;
+          const parentB = this.state.entities.find(o => o.id === e.parentBId) || parentA;
+          const biomeObj = BIOMES.find(b => b.id === parentA.currentBiome) || BIOMES[0];
+
+          const childGenome = crossoverAndMutate(
+            parentA.genome,
+            parentB.genome,
+            biomeObj.mutationBoost
+          );
+          const morphology = deriveMorphology(childGenome, parentA.morphology.bodyHue);
+          const speciesInfo = deriveSpeciesInfo(childGenome);
+
+          // Speciation detection!
+          const isNewSpecies =
+            speciesInfo.speciesId !== parentA.speciesId &&
+            speciesInfo.speciesId !== parentB.speciesId;
+          if (isNewSpecies) {
+            world.totalSpeciations++;
+            this.emitEvent({
+              id: _liveEventIdCounter++,
+              tick: world.currentTick,
+              category: 'speciation',
+              title: `¡Especiación: ${speciesInfo.speciesName}!`,
+              description: `Una nueva especie ha surgido por mutación y selección en ${biomeObj.nameEs}: ${speciesInfo.speciesName}.`,
+              biome: parentA.currentBiome,
+              x: parentA.x,
+              y: parentA.y,
+              important: true,
+              timestamp: new Date().toISOString(),
+            });
+          }
+
+          const childId = _entityIdCounter++;
+          const childName = generateEntityName(childId);
+          const child: Entity = {
+            id: childId,
+            name: childName,
+            speciesId: speciesInfo.speciesId,
+            speciesName: speciesInfo.speciesName,
+            tribeId: parentA.tribeId,
+            generation: Math.max(parentA.generation, parentB.generation) + 1,
+            ageTicks: 0,
+            maxAgeTicks: 200 + Math.round(childGenome.survivalDrive * 80),
+            lifeStage: 'larva',
+
+            x: Math.round(parentA.x + (Math.random() - 0.5) * 30),
+            y: Math.round(parentA.y + (Math.random() - 0.5) * 30),
+            vx: 0,
+            vy: 0,
+            heading: parentA.heading,
+            targetX: null,
+            targetY: null,
+            currentBiome: parentA.currentBiome,
+            activity: 'resting',
+
+            energy: 90,
+            hydration: 90,
+            health: 100,
+            warmth: 85,
+            stamina: 90,
+            intelligence: 0.15,
+
+            genome: childGenome,
+            morphology,
+            emotionalState: { emotion: 'wonder', intensity: 0.8 },
+            inventory: { food: 2, water: 2, wood: 0, stone: 0, crystal: 0, herbs: 0 },
+
+            isAlive: true,
+            reproductionCooldown: 50,
+            gestationTicks: 0,
+            parentAId: parentA.id,
+            parentBId: parentB.id,
+            childrenIds: [],
+            bornAtTick: world.currentTick,
+            bornAtIso: new Date().toISOString(),
+            diedAtTick: null,
+
+            lastThought: 'Abro los ojos a este mundo inmenso.',
+            speechBubble: '...',
+            speechTimerMs: 2500,
+            currentDesire: 'Permanecer cerca de mis protectores.',
+            currentGoal: 'resting',
+            existentialStatement: 'La vida apenas comienza.',
+            memories: [`Nací en ${biomeObj.nameEs} hijo de ${parentA.name} y ${parentB.name}.`],
+            memoryArchive: [],
+            beliefs: {},
+            relationships: {
+              [parentA.id]: {
+                targetId: parentA.id,
+                name: parentA.name,
+                valence: 'kin',
+                affinity: 0.9,
+                encounters: 1,
+                lastTick: world.currentTick,
+                keyMemory: 'Me dio la vida.',
+              },
+            },
+            finalMessage: null,
+          };
+
+          child.intelligence = computeIntelligence(child, 0, false);
+
+          parentA.childrenIds.push(child.id);
+          parentB.childrenIds.push(child.id);
+          parentA.reproductionCooldown = 35;
+          parentB.reproductionCooldown = 35;
+
+          this.state.entities.push(child);
+          world.totalBirths++;
+
+          this.emitEvent({
+            id: _liveEventIdCounter++,
+            tick: world.currentTick,
+            category: 'birth',
+            title: `Nacimiento de ${child.name}`,
+            description: `${parentA.name} y ${parentB.name} dieron a luz a ${child.name} (${child.speciesName}) en ${biomeObj.nameEs}.`,
+            biome: parentA.currentBiome,
+            x: child.x,
+            y: child.y,
+            entityIds: [child.id, parentA.id, parentB.id],
+            important: isNewSpecies,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+    }
+
+    // 3. Mating Courting Matches
+    const eligibleLiving = this.state.entities.filter(
+      e =>
+        e.isAlive &&
+        e.lifeStage === 'adult' &&
+        e.reproductionCooldown <= 0 &&
+        e.gestationTicks === 0 &&
+        e.energy > 68 &&
+        e.hydration > 68
+    );
+
+    for (let i = 0; i < eligibleLiving.length; i++) {
+      const eA = eligibleLiving[i];
+      if (eA.reproductionCooldown > 0 || eA.gestationTicks > 0) continue;
+
+      for (let j = i + 1; j < eligibleLiving.length; j++) {
+        const eB = eligibleLiving[j];
+        if (eB.reproductionCooldown > 0 || eB.gestationTicks > 0) continue;
+
+        const dist = Math.hypot(eA.x - eB.x, eA.y - eB.y);
+        if (dist < 65) {
+          // Initiate pregnancy
+          eA.gestationTicks = 5;
+          eA.parentBId = eB.id;
+          eA.reproductionCooldown = 40;
+          eB.reproductionCooldown = 40;
+
+          eA.speechBubble = generateSpeech(eA, eB, 'romance');
+          eA.speechTimerMs = 3500;
+          eB.speechBubble = generateSpeech(eB, eA, 'romance');
+          eB.speechTimerMs = 3500;
+
+          this.emitEvent({
+            id: _liveEventIdCounter++,
+            tick: world.currentTick,
+            category: 'romance',
+            title: 'Cortejo Fértil',
+            description: `${eA.name} y ${eB.name} iniciaron el ciclo de procreación.`,
+            biome: eA.currentBiome,
+            x: eA.x,
+            y: eA.y,
+            entityIds: [eA.id, eB.id],
+            important: false,
+            timestamp: new Date().toISOString(),
+          });
+          break;
+        }
+      }
+    }
+
+    // 4. Social Encounters, Dialogue & Memory Consolidation
+    for (let i = 0; i < living.length; i++) {
+      const eA = living[i];
+      if (!eA.isAlive) continue;
+
+      for (let j = i + 1; j < living.length; j++) {
+        const eB = living[j];
+        if (!eB.isAlive) continue;
+
+        const dist = Math.hypot(eA.x - eB.x, eA.y - eB.y);
+        if (dist < 110) {
+          // Record or reinforce relationship
+          const relKeyA = eB.id.toString();
+          if (!eA.relationships[relKeyA]) {
+            eA.relationships[relKeyA] = {
+              targetId: eB.id,
+              name: eB.name,
+              valence: eA.tribeId === eB.tribeId && eA.tribeId !== null ? 'kin' : 'friend',
+              affinity: 0.5,
+              encounters: 1,
+              lastTick: world.currentTick,
+              keyMemory: `Nos conocimos en ${eA.currentBiome}.`,
+            };
+          } else {
+            eA.relationships[relKeyA].encounters++;
+            eA.relationships[relKeyA].lastTick = world.currentTick;
+          }
+
+          // Spoken dialogue utterance
+          if (eA.speechTimerMs <= 0 && Math.random() < 0.35) {
+            const tribe = tribes.find(t => t.id === eA.tribeId) || null;
+            if (eA.lifeStage === 'elder' && eB.lifeStage !== 'elder') {
+              eA.speechBubble = generateSpeech(eA, eB, 'teaching', tribe);
+              eB.intelligence = Math.min(1.0, eB.intelligence + 0.015);
+            } else {
+              eA.speechBubble = generateSpeech(eA, eB, 'greeting', tribe);
+            }
+            eA.speechTimerMs = 3800;
+          }
+        }
+      }
+
+      // Consolidate memories if growing large
+      if (eA.memories.length > 15) {
+        eA.memories = consolidateMemories(eA.memories, 10);
+      }
+    }
+
+    // 5. Cognition & Internal Thought Logging
+    for (let i = 0; i < living.length; i++) {
+      const e = living[i];
+      if (!e.isAlive) continue;
+
+      // Generate a new thought every ~3 ticks per entity
+      if (world.currentTick % 3 === (e.id % 3)) {
+        const thoughtObj = generateThought(e, world, living, structures);
+        e.lastThought = thoughtObj.thought;
+        e.currentDesire = thoughtObj.desire;
+        e.emotionalState = {
+          emotion: thoughtObj.emotion,
+          intensity: thoughtObj.intensity,
+        };
+
+        if (!this.state.logs[e.id]) {
+          this.state.logs[e.id] = [];
+        }
+        this.state.logs[e.id].unshift({
+          id: Date.now() + Math.random(),
+          entityId: e.id,
+          tick: world.currentTick,
+          thought: thoughtObj.thought,
+          action: e.activity,
+          emotion: thoughtObj.emotion,
+          emotionIntensity: thoughtObj.intensity,
+          timestamp: new Date().toISOString(),
+        });
+        if (this.state.logs[e.id].length > 25) {
+          this.state.logs[e.id].length = 25;
+        }
+
+        // Optional async Anthropic Claude enrichment
+        if (this.settings.anthropicApiKey && Math.random() < 0.20) {
+          enrichThoughtWithClaude(this.settings.anthropicApiKey, e, world, thoughtObj.thought).then(
+            enriched => {
+              if (enriched !== thoughtObj.thought) {
+                e.lastThought = enriched;
+              }
+            }
+          );
+        }
+      }
+    }
+
+    // 6. Society, Tribes, Technologies & Autonomous Structures
+    const tribeFormation = checkTribeFormation(this.state.entities, tribes, world);
+    for (const nt of tribeFormation.newTribes) {
+      this.state.tribes.push(nt);
+    }
+    for (const ev of tribeFormation.liveEvents) {
+      this.emitEvent(ev);
+    }
+
+    const techDiscovery = checkTechnologicalDiscovery(this.state.tribes, this.state.entities, world);
+    for (const ev of techDiscovery.liveEvents) {
+      this.emitEvent(ev);
+    }
+
+    const buildingResult = checkAutonomousBuilding(
+      this.state.entities,
+      this.state.tribes,
+      this.state.structures,
+      world
+    );
+    for (const ns of buildingResult.newStructures) {
+      this.state.structures.push(ns);
+    }
+    for (const ev of buildingResult.liveEvents) {
+      this.emitEvent(ev);
+    }
+
+    // 7. Ecology & Resources Regrow
+    updateResources(resources, world.season, world.weather, 3.5);
+
+    // 8. Farm harvest yields into granaries
+    for (const st of structures) {
+      if (st.kind === 'farm' && Math.random() < 0.35) {
+        const granary = structures.find(
+          s => s.kind === 'granary' && s.tribeId === st.tribeId
+        );
+        if (granary && granary.storedFood < 200) {
+          granary.storedFood += 15;
+        }
+      }
+    }
+
+    // 9. World History Snapshot
+    if (world.currentTick % 5 === 0) {
+      const activeLiving = this.state.entities.filter(e => e.isAlive);
+      const uniqueSpecies = new Set(activeLiving.map(e => e.speciesId)).size;
+      const avgEnergy = activeLiving.length
+        ? activeLiving.reduce((s, e) => s + e.energy, 0) / activeLiving.length
+        : 0;
+      const avgIntel = activeLiving.length
+        ? activeLiving.reduce((s, e) => s + e.intelligence, 0) / activeLiving.length
+        : 0;
+
+      const avgGenome: any = {};
+      if (activeLiving.length > 0) {
+        const keys: (keyof Genome)[] = [
+          'curiosity', 'empathy', 'aggression', 'creativity', 'survivalDrive',
+          'sociability', 'speedGene', 'sizeGene', 'senseGene', 'bioluminescence',
+        ];
+        for (const k of keys) {
+          avgGenome[k] =
+            activeLiving.reduce((s, e) => s + e.genome[k], 0) / activeLiving.length;
+        }
+      }
+
+      const snapshot: GenerationSnapshot = {
+        tick: world.currentTick,
+        population: activeLiving.length,
+        speciesCount: uniqueSpecies,
+        avgEnergy: Number(avgEnergy.toFixed(1)),
+        avgIntelligence: Number(avgIntel.toFixed(2)),
+        avgGenome,
+      };
+
+      world.historySnapshots.push(snapshot);
+      if (world.historySnapshots.length > 80) {
+        world.historySnapshots.shift();
+      }
+    }
+
+    // 10. Clean entity registry: keep all living + up to 40 most recent deceased ancestors
+    const livingSet = this.state.entities.filter(e => e.isAlive);
+    const deceasedSet = this.state.entities
+      .filter(e => !e.isAlive)
+      .sort((a, b) => (b.diedAtTick || 0) - (a.diedAtTick || 0))
+      .slice(0, 40);
+
+    this.state.entities = [...livingSet, ...deceasedSet];
+
+    // Autosave periodically
+    if (world.currentTick % 20 === 0) {
+      await persistSimState(this.state);
+    }
   }
 
-  private _pushEvent(ev: Omit<LiveEvent, 'id'>) {
-    const event = { ...ev, id: nextEvId() } as LiveEvent
-    this._setState({ liveEvents: [event, ...this.state.liveEvents.slice(0, 59)] })
+  // ─── DIVINE POWERS & INTERVENTIONS ────────────────────────────────────────
+
+  public applyDivinePower(
+    power: Exclude<DivinePowerId, 'observe'>,
+    worldX: number,
+    worldY: number
+  ): LiveEvent | null {
+    const x = Math.max(50, Math.min(WORLD_WIDTH - 50, worldX));
+    const y = Math.max(50, Math.min(WORLD_HEIGHT - 50, worldY));
+    const biome = getBiomeAt(x, y);
+    const now = Date.now();
+    const radius = 240;
+
+    // Visual divine effect ripple
+    this.state.divineEffects.push({
+      id: now + Math.random(),
+      power,
+      x,
+      y,
+      radius,
+      createdAtMs: now,
+      durationMs: 2800,
+    });
+
+    let event: LiveEvent | null = null;
+    const living = this.state.entities.filter(e => e.isAlive);
+
+    switch (power) {
+      case 'nourish': {
+        for (const e of living) {
+          if (Math.hypot(e.x - x, e.y - y) <= radius) {
+            e.energy = Math.min(100, e.energy + 45);
+            e.hydration = Math.min(100, e.hydration + 40);
+            e.emotionalState = { emotion: 'joy', intensity: 0.95 };
+            e.speechBubble = '¡Lluvia de maná divino!';
+            e.speechTimerMs = 3500;
+          }
+        }
+        for (const res of this.state.resources) {
+          if (Math.hypot(res.x - x, res.y - y) <= radius) {
+            res.amount = res.maxAmount;
+          }
+        }
+        event = {
+          id: _liveEventIdCounter++,
+          tick: this.state.world.currentTick,
+          category: 'divine_intervention',
+          title: 'Lluvia de Maná Dorado',
+          description: `Una bendición celeste colmó de sustento y vigor a las criaturas de ${biome}.`,
+          biome,
+          x,
+          y,
+          important: true,
+          timestamp: new Date().toISOString(),
+        };
+        break;
+      }
+
+      case 'rain': {
+        for (const e of living) {
+          if (Math.hypot(e.x - x, e.y - y) <= radius) {
+            e.hydration = 100;
+            e.speechBubble = '¡El agua sagrada calma mi sed!';
+            e.speechTimerMs = 3000;
+          }
+        }
+        for (const res of this.state.resources) {
+          if (res.kind === 'water_spring' && Math.hypot(res.x - x, res.y - y) <= radius) {
+            res.amount = res.maxAmount;
+          }
+        }
+        event = {
+          id: _liveEventIdCounter++,
+          tick: this.state.world.currentTick,
+          category: 'divine_intervention',
+          title: 'Tormenta Fértil',
+          description: `Un aguacero vivificante refrescó los manantiales y colmó la sed en ${biome}.`,
+          biome,
+          x,
+          y,
+          important: true,
+          timestamp: new Date().toISOString(),
+        };
+        break;
+      }
+
+      case 'solar_blessing': {
+        for (const e of living) {
+          if (Math.hypot(e.x - x, e.y - y) <= radius) {
+            e.warmth = 100;
+            e.health = Math.min(100, e.health + 45);
+            e.emotionalState = { emotion: 'hope', intensity: 0.9 };
+            e.speechBubble = '¡Siento el calor primordial!';
+            e.speechTimerMs = 3000;
+          }
+        }
+        event = {
+          id: _liveEventIdCounter++,
+          tick: this.state.world.currentTick,
+          category: 'divine_intervention',
+          title: 'Bendición Solar',
+          description: `Un resplandor ardiente disipó el frío y sanó los cuerpos heridos en ${biome}.`,
+          biome,
+          x,
+          y,
+          important: true,
+          timestamp: new Date().toISOString(),
+        };
+        break;
+      }
+
+      case 'mutagen': {
+        const mutatedIds: number[] = [];
+        for (const e of living) {
+          if (Math.hypot(e.x - x, e.y - y) <= radius) {
+            e.genome = crossoverAndMutate(e.genome, e.genome, 2.6);
+            e.morphology = deriveMorphology(e.genome, e.morphology.bodyHue);
+            const newSpecies = deriveSpeciesInfo(e.genome);
+            if (newSpecies.speciesId !== e.speciesId) {
+              e.speciesId = newSpecies.speciesId;
+              e.speciesName = newSpecies.speciesName;
+              this.state.world.totalSpeciations++;
+            }
+            e.emotionalState = { emotion: 'transcendence', intensity: 1.0 };
+            e.speechBubble = '¡Mi ser se transforma!';
+            e.speechTimerMs = 3500;
+            mutatedIds.push(e.id);
+          }
+        }
+        event = {
+          id: _liveEventIdCounter++,
+          tick: this.state.world.currentTick,
+          category: 'divine_intervention',
+          title: 'Rayo Cósmico Evolutivo',
+          description: `Ondas mutágenas alteraron el código genético de ${mutatedIds.length} seres en ${biome}.`,
+          biome,
+          x,
+          y,
+          entityIds: mutatedIds,
+          important: true,
+          timestamp: new Date().toISOString(),
+        };
+        break;
+      }
+
+      case 'monolith': {
+        const monolithStruct: Structure = {
+          id: Date.now(),
+          kind: 'monolith',
+          biome,
+          x,
+          y,
+          tribeId: null,
+          builderId: null,
+          builderName: 'La Presencia',
+          hp: 600,
+          maxHp: 600,
+          storedFood: 0,
+          auraRadius: 280,
+          inscription: 'ERIGIDO POR EL OBSERVADOR: "LA CONCIENCIA ES LA FLOR DEL UNIVERSO"',
+          createdTick: this.state.world.currentTick,
+        };
+        this.state.structures.push(monolithStruct);
+        for (const e of living) {
+          if (Math.hypot(e.x - x, e.y - y) <= radius) {
+            e.intelligence = Math.min(1.0, e.intelligence + 0.22);
+            e.emotionalState = { emotion: 'transcendence', intensity: 1.0 };
+          }
+        }
+        event = {
+          id: _liveEventIdCounter++,
+          tick: this.state.world.currentTick,
+          category: 'divine_intervention',
+          title: 'Monolito Ancestral Erguido',
+          description: `Un monolito resonante descendió en ${biome}, irradiando sabiduría arcana.`,
+          biome,
+          x,
+          y,
+          important: true,
+          timestamp: new Date().toISOString(),
+        };
+        break;
+      }
+
+      case 'spawn_life': {
+        const newGenome = crossoverAndMutate(SEED_ARCHETYPES[0].genome, SEED_ARCHETYPES[1].genome, 1.8);
+        const morphology = deriveMorphology(newGenome);
+        const species = deriveSpeciesInfo(newGenome);
+        const childId = _entityIdCounter++;
+        const childName = generateEntityName(childId);
+
+        const newCreature: Entity = {
+          id: childId,
+          name: childName,
+          speciesId: species.speciesId,
+          speciesName: species.speciesName,
+          tribeId: null,
+          generation: 1,
+          ageTicks: 10,
+          maxAgeTicks: 230,
+          lifeStage: 'juvenile',
+
+          x,
+          y,
+          vx: 0,
+          vy: 0,
+          heading: Math.random() * Math.PI * 2,
+          targetX: null,
+          targetY: null,
+          currentBiome: biome,
+          activity: 'wandering',
+
+          energy: 95,
+          hydration: 95,
+          health: 100,
+          warmth: 90,
+          stamina: 100,
+          intelligence: 0.30,
+
+          genome: newGenome,
+          morphology,
+          emotionalState: { emotion: 'wonder', intensity: 0.9 },
+          inventory: { food: 5, water: 5, wood: 0, stone: 0, crystal: 0, herbs: 0 },
+
+          isAlive: true,
+          reproductionCooldown: 25,
+          gestationTicks: 0,
+          parentAId: null,
+          parentBId: null,
+          childrenIds: [],
+          bornAtTick: this.state.world.currentTick,
+          bornAtIso: new Date().toISOString(),
+          diedAtTick: null,
+
+          lastThought: 'Una chispa divina me dio forma en la tierra.',
+          speechBubble: '¡Existo!',
+          speechTimerMs: 3000,
+          currentDesire: 'Conocer este mundo nuevo.',
+          currentGoal: 'wandering',
+          existentialStatement: 'Nací del aliento divino.',
+          memories: [`Fui engendrado por la chispa divina en ${biome}.`],
+          memoryArchive: [],
+          beliefs: {},
+          relationships: {},
+          finalMessage: null,
+        };
+
+        this.state.entities.push(newCreature);
+        this.state.world.totalBirths++;
+
+        event = {
+          id: _liveEventIdCounter++,
+          tick: this.state.world.currentTick,
+          category: 'divine_intervention',
+          title: 'Chispa de Génesis',
+          description: `Una nueva criatura, ${childName} (${species.speciesName}), nació del poder creador en ${biome}.`,
+          biome,
+          x,
+          y,
+          entityIds: [childId],
+          important: true,
+          timestamp: new Date().toISOString(),
+        };
+        break;
+      }
+
+      case 'lightning': {
+        for (const e of living) {
+          if (Math.hypot(e.x - x, e.y - y) <= radius) {
+            e.health -= 45;
+            e.emotionalState = { emotion: 'fear', intensity: 1.0 };
+            e.speechBubble = '¡El cielo se quiebra!';
+            e.speechTimerMs = 3000;
+          }
+        }
+        for (const pred of this.state.predators) {
+          if (Math.hypot(pred.x - x, pred.y - y) <= radius) {
+            pred.hp -= 65;
+            pred.state = 'repelled';
+          }
+        }
+        event = {
+          id: _liveEventIdCounter++,
+          tick: this.state.world.currentTick,
+          category: 'divine_intervention',
+          title: 'Rayo Cataclísmico',
+          description: `Un trueno sobrecogedor estremeció ${biome}, castigando la tierra con fuego celeste.`,
+          biome,
+          x,
+          y,
+          important: true,
+          timestamp: new Date().toISOString(),
+        };
+        break;
+      }
+    }
+
+    if (event) {
+      this.emitEvent(event);
+    }
+    this.notifySubscribers();
+    return event;
   }
 
-  private _setState(partial: Partial<SimState>) {
-    this.state = { ...this.state, ...partial }
+  // ─── DIRECT PLAYER ENTITY INTERACTIONS ────────────────────────────────────
+
+  public feedEntity(entityId: number): void {
+    const e = this.state.entities.find(ent => ent.id === entityId && ent.isAlive);
+    if (!e) return;
+    e.energy = Math.min(100, e.energy + 40);
+    e.speechBubble = '¡Qué manjar tan dulce!';
+    e.speechTimerMs = 3000;
+    this.notifySubscribers();
   }
 
-  private _notify() {
-    const snap = this.state
-    this.listeners.forEach(fn => fn(snap))
+  public healEntity(entityId: number): void {
+    const e = this.state.entities.find(ent => ent.id === entityId && ent.isAlive);
+    if (!e) return;
+    e.health = Math.min(100, e.health + 40);
+    e.speechBubble = 'Mis heridas sanan milagrosamente.';
+    e.speechTimerMs = 3000;
+    this.notifySubscribers();
+  }
+
+  public blessEntity(entityId: number): void {
+    const e = this.state.entities.find(ent => ent.id === entityId && ent.isAlive);
+    if (!e) return;
+    e.stamina = 100;
+    e.intelligence = Math.min(1.0, e.intelligence + 0.12);
+    e.emotionalState = { emotion: 'transcendence', intensity: 1.0 };
+    e.speechBubble = 'Una luz infinita inunda mi mente.';
+    e.speechTimerMs = 3500;
+    this.notifySubscribers();
+  }
+
+  public inspectLineage(entityId: number): {
+    entity: Entity | null;
+    parents: Entity[];
+    children: Entity[];
+    ancestors: Entity[];
+  } {
+    const entity = this.state.entities.find(e => e.id === entityId) || null;
+    if (!entity) {
+      return { entity: null, parents: [], children: [], ancestors: [] };
+    }
+
+    const all = this.state.entities;
+    const parents = all.filter(e => e.id === entity.parentAId || e.id === entity.parentBId);
+    const children = all.filter(e => e.parentAId === entity.id || e.parentBId === entity.id);
+
+    const ancestors: Entity[] = [];
+    const queue = [...parents];
+    const visited = new Set<number>([entity.id]);
+
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      if (visited.has(cur.id)) continue;
+      visited.add(cur.id);
+      ancestors.push(cur);
+
+      const pA = all.find(e => e.id === cur.parentAId);
+      const pB = all.find(e => e.id === cur.parentBId);
+      if (pA && !visited.has(pA.id)) queue.push(pA);
+      if (pB && !visited.has(pB.id)) queue.push(pB);
+    }
+
+    return { entity, parents, children, ancestors };
+  }
+
+  public getCatchUpSummary(): CatchUpSummary | null {
+    return this.catchUpSummary;
+  }
+
+  public clearCatchUpSummary(): void {
+    this.catchUpSummary = null;
+  }
+
+  public getSettings(): SimSettings {
+    return { ...this.settings };
+  }
+
+  public async updateSettings(partial: Partial<SimSettings>): Promise<void> {
+    this.settings = { ...this.settings, ...partial };
+    await persistSimSettings(this.settings);
+  }
+
+  public async saveNow(): Promise<void> {
+    await persistSimState(this.state);
   }
 }
 
-// Singleton
-export const simulation = new Simulation()
-
-function shouldClone(e: Entity): boolean {
-  return e.energy >= 85 && e.age_ticks >= 8 && e.genome.survival_drive > 0.7 && Math.random() < 0.05
-}
+export const simulation = new Simulation();

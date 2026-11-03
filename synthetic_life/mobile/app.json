@@ -1,23 +1,37 @@
 {
   "expo": {
-    "name": "Synthetic Life",
+    "name": "Uberis",
     "slug": "uberis",
-    "version": "1.0.0",
-    "platforms": ["ios"],
-    "newArchEnabled": true,
+    "owner": "fabianimv",
+    "version": "2.0.0",
     "orientation": "portrait",
-    "scheme": "synthetic-life",
+    "icon": "./assets/icon.png",
+    "scheme": "uberis",
     "userInterfaceStyle": "dark",
-    "assetBundlePatterns": ["**/*"],
+    "backgroundColor": "#040814",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#040814"
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.fabianimv.uberis"
+    },
+    "android": {
+      "backgroundColor": "#040814",
+      "package": "com.fabianimv.uberis"
     },
     "web": {
       "bundler": "metro",
       "output": "static"
     },
-    "plugins": ["expo-router"],
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      "expo-audio",
+      "expo-font"
+    ],
     "experiments": {
       "typedRoutes": true
     },

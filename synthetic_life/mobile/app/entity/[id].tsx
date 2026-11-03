@@ -1,364 +1,909 @@
-import { useLocalSearchParams, useNavigation } from 'expo-router'
-import { useEffect } from 'react'
+import React, { useMemo } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import {
-  Alert,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native'
-import EnergyBar from '../../components/EnergyBar'
-import GenomeBar from '../../components/GenomeBar'
-import { useEntityById, useEntityLogs, useSimulation } from '../../context/SimulationContext'
-import { COLORS, emotionColor } from '../../constants/theme'
-import type { RelationshipEntry } from '../../engine/types'
+  useEntityById,
+  useEntityLogs,
+  useSimulation,
+} from '@/context/SimulationContext';
+import MorphologyAvatar from '@/components/MorphologyAvatar';
+import EnergyBar from '@/components/EnergyBar';
+import GenomeBar from '@/components/GenomeBar';
+import {
+  ACTIVITY_META,
+  BIOME_META,
+  COLORS,
+  LIFE_STAGE_META,
+  emotionColor,
+  emotionLabelEs,
+} from '@/constants/theme';
+import { hapticSelection } from '@/audio/haptics';
+import type { Entity } from '@/engine/types';
 
-const VALENCE_COLOR: Record<string, string> = {
-  family: '#a78bfa',
-  friend: '#34d399',
-  rival:  '#f87171',
-  neutral:'#94a3b8',
+const VALENCE_META: Record<string, { labelEs: string; color: string }> = {
+  mate: { labelEs: 'Pareja', color: COLORS.rose },
+  kin: { labelEs: 'Sangre', color: COLORS.gold },
+  friend: { labelEs: 'Aliado', color: COLORS.emerald },
+  mentor: { labelEs: 'Mentor', color: COLORS.violet },
+  rival: { labelEs: 'Rival', color: COLORS.crimson },
+  neutral: { labelEs: 'Conocido', color: COLORS.textSecondary },
+};
+
+function LineageMiniCard({
+  item,
+  roleLabel,
+  onPress,
+}: {
+  item: Entity;
+  roleLabel: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.lineageNode, pressed && { opacity: 0.78 }]}
+    >
+      <MorphologyAvatar
+        morphology={item.morphology}
+        lifeStage={item.lifeStage}
+        bioluminescence={item.genome.bioluminescence}
+        isAlive={item.isAlive}
+        size={42}
+      />
+      <Text style={styles.lineageRole}>{roleLabel}</Text>
+      <Text style={styles.lineageName} numberOfLines={1}>
+        {item.name}
+      </Text>
+      <Text style={styles.lineageSub}>
+        G{item.generation} · {item.isAlive ? 'Vivo' : 'Caído'}
+      </Text>
+    </Pressable>
+  );
 }
-const VALENCE_ICON: Record<string, string> = {
-  family: '💜',
-  friend: '💚',
-  rival:  '⚔️',
-  neutral:'○',
-}
-const VALENCE_ORDER = ['family', 'friend', 'rival', 'neutral'] as const
 
 export default function EntityDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>()
-  const numId = id ? parseInt(id, 10) : null
-  const entity = useEntityById(numId)
-  const logs   = useEntityLogs(numId)
-  const { feedEntity } = useSimulation()
-  const navigation = useNavigation()
+  const params = useLocalSearchParams<{ id: string }>();
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const entityId = Number(params.id);
 
-  useEffect(() => {
-    if (entity?.name) navigation.setOptions({ title: entity.name })
-  }, [entity?.name, navigation])
+  const {
+    simState,
+    feedEntity,
+    healEntity,
+    blessEntity,
+    inspectLineage,
+    setSelectedEntityId,
+    setFollowSelected,
+    focusWorldPoint,
+  } = useSimulation();
 
-  const feed = () => {
-    if (!numId || !entity?.is_alive) return
-    feedEntity(numId)
-    Alert.alert('Alimentado', `${entity?.name} recibió 25 de energía.`)
-  }
+  const entity = useEntityById(Number.isFinite(entityId) ? entityId : null);
+  const logs = useEntityLogs(Number.isFinite(entityId) ? entityId : null);
+
+  const lineage = useMemo(() => {
+    if (!Number.isFinite(entityId)) {
+      return { entity: null, parents: [], children: [], ancestors: [] };
+    }
+    return inspectLineage(entityId);
+  }, [entityId, inspectLineage, simState.entities]);
+
+  const tribe = useMemo(() => {
+    if (!entity?.tribeId) return null;
+    return simState.tribes.find((t) => t.id === entity.tribeId) ?? null;
+  }, [entity?.tribeId, simState.tribes]);
 
   if (!entity) {
     return (
-      <View style={styles.center}>
-        <Text style={styles.notFound}>Entidad no encontrada</Text>
+      <View style={[styles.root, { paddingTop: insets.top + 16 }]}>
+        <View style={styles.topNav}>
+          <Pressable onPress={() => router.back()} style={styles.backBtn}>
+            <Ionicons name="arrow-back" size={20} color={COLORS.text} />
+          </Pressable>
+          <Text style={styles.navTitle}>Expediente no encontrado</Text>
+        </View>
+        <View style={styles.notFoundBox}>
+          <Text style={styles.notFoundText}>
+            Este ser ya se ha disuelto en la memoria ancestral del continente.
+          </Text>
+        </View>
       </View>
-    )
+    );
   }
 
-  const emotion = entity.emotional_state?.emotion ?? 'neutral'
-  const eColor  = emotionColor(emotion)
+  const emoCol = emotionColor(entity.emotionalState?.emotion);
+  const actMeta = ACTIVITY_META[entity.activity] ?? ACTIVITY_META.wandering;
+  const biomeMeta = BIOME_META[entity.currentBiome];
+  const stageMeta = LIFE_STAGE_META[entity.lifeStage];
+  const relationshipsList = Object.values(entity.relationships ?? {}).sort(
+    (a, b) => Math.abs(b.affinity) - Math.abs(a.affinity)
+  );
+  const beliefEntries = Object.entries(entity.beliefs ?? {});
 
-  const relationships = entity.relationships ?? {}
-  const relEntries = Object.values(relationships) as RelationshipEntry[]
-  const hasRelationships = relEntries.length > 0
-  const memArchive = entity.memory_archive ?? []
+  const handleLocateOnMap = () => {
+    hapticSelection();
+    setSelectedEntityId(entity.id);
+    setFollowSelected(true);
+    focusWorldPoint(entity.x, entity.y, 1.15);
+    router.navigate('/(tabs)');
+  };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      {/* Hero */}
-      <View style={[styles.hero, { borderColor: eColor + '44' }]}>
-        <View style={[styles.glowDot, { backgroundColor: eColor, shadowColor: eColor }]} />
-        <View style={styles.heroText}>
-          <Text style={styles.heroName}>{entity.name}</Text>
-          <Text style={styles.heroMeta}>
-            Gen {entity.generation} · Edad {entity.age_ticks} · {entity.current_zone}
+    <View style={[styles.root, { paddingTop: insets.top + 6 }]}>
+      {/* Custom Observatory Header */}
+      <View style={styles.topNav}>
+        <Pressable
+          onPress={() => router.back()}
+          style={({ pressed }) => [styles.backBtn, pressed && { opacity: 0.72 }]}
+        >
+          <Ionicons name="chevron-back" size={20} color={COLORS.text} />
+        </Pressable>
+
+        <View style={{ flex: 1 }}>
+          <Text style={styles.navOverline}>EXPEDIENTE DE CONSCIENCIA</Text>
+          <Text style={styles.navTitle} numberOfLines={1}>
+            {entity.name}
           </Text>
-          {entity.current_goal && (
-            <Text style={styles.goalInHero} numberOfLines={1}>🎯 {entity.current_goal}</Text>
-          )}
-          {!entity.is_alive && (
-            <Text style={styles.deadBadge}>† Fallecido en turno {entity.died_at_tick}</Text>
-          )}
         </View>
-        {entity.is_alive && (
-          <Pressable onPress={feed} style={styles.feedBtn}>
-            <Text style={styles.feedBtnText}>+ Alimentar</Text>
+
+        {entity.isAlive && (
+          <Pressable
+            onPress={handleLocateOnMap}
+            style={({ pressed }) => [styles.mapJumpBtn, pressed && { opacity: 0.78 }]}
+          >
+            <Ionicons name="locate" size={15} color="#040814" />
+            <Text style={styles.mapJumpText}>Mapa</Text>
           </Pressable>
         )}
       </View>
 
-      {/* Status */}
-      <View style={styles.card}>
-        <EnergyBar energy={entity.energy} />
-        <View style={styles.emotionRow}>
-          <View style={[styles.emotionBadge, { backgroundColor: eColor + '22', borderColor: eColor + '55' }]}>
-            <Text style={[styles.emotionTxt, { color: eColor }]}>{emotion}</Text>
-          </View>
-          <Text style={styles.intensityTxt}>
-            {Math.round((entity.emotional_state?.intensity ?? 0) * 100)}% intensidad
-          </Text>
-        </View>
-      </View>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* HERO MORPHOLOGY & IDENTITY CARD */}
+        <View style={styles.heroCard}>
+          <View style={styles.heroRow}>
+            <MorphologyAvatar
+              morphology={entity.morphology}
+              lifeStage={entity.lifeStage}
+              bioluminescence={entity.genome.bioluminescence}
+              isAlive={entity.isAlive}
+              tribeColor={tribe?.color ?? null}
+              size={106}
+            />
 
-      {/* Genome */}
-      <Text style={styles.sectionTitle}>Genoma</Text>
-      <View style={styles.card}>
-        {Object.entries(entity.genome ?? {}).map(([trait, val]) => (
-          <GenomeBar key={trait} trait={trait} value={val as number} />
-        ))}
-      </View>
+            <View style={styles.heroMeta}>
+              <Text style={styles.speciesHero}>{entity.speciesName}</Text>
+              <Text style={styles.subMetaText}>
+                {stageMeta.labelEs} · Generación {entity.generation}
+              </Text>
+              <Text style={styles.subMetaText}>
+                Edad: {entity.ageTicks} / {entity.maxAgeTicks} ciclos
+              </Text>
+              {tribe ? (
+                <Text style={[styles.clanBadgeText, { color: tribe.color }]}>
+                  Clan {tribe.name}
+                </Text>
+              ) : (
+                <Text style={styles.subMetaText}>Espíritu nómada sin clan</Text>
+              )}
 
-      {/* Current thought */}
-      {entity.last_thought && (
-        <>
-          <Text style={styles.sectionTitle}>Pensamiento</Text>
-          <View style={[styles.card, { borderLeftWidth: 3, borderLeftColor: '#22d3ee' }]}>
-            <Text style={styles.quoteText}>{entity.last_thought}</Text>
-          </View>
-        </>
-      )}
-
-      {/* Desire */}
-      {entity.current_desire && (
-        <>
-          <Text style={styles.sectionTitle}>Deseo</Text>
-          <View style={[styles.card, { borderLeftWidth: 3, borderLeftColor: '#f59e0b' }]}>
-            <Text style={styles.desireText}>{entity.current_desire}</Text>
-          </View>
-        </>
-      )}
-
-      {/* Current Goal */}
-      {entity.current_goal && (
-        <>
-          <Text style={styles.sectionTitle}>Objetivo activo</Text>
-          <View style={[styles.card, { borderLeftWidth: 3, borderLeftColor: '#34d399' }]}>
-            <Text style={styles.goalText}>{entity.current_goal}</Text>
-          </View>
-        </>
-      )}
-
-      {/* Existential statement */}
-      {entity.existential_statement && (
-        <>
-          <Text style={styles.sectionTitle}>Visión existencial</Text>
-          <View style={[styles.card, { borderLeftWidth: 3, borderLeftColor: '#a78bfa' }]}>
-            <Text style={styles.existText}>{entity.existential_statement}</Text>
-          </View>
-        </>
-      )}
-
-      {/* Relationships */}
-      {hasRelationships && (
-        <>
-          <Text style={styles.sectionTitle}>Relaciones</Text>
-          <View style={styles.card}>
-            {VALENCE_ORDER.map(valence => {
-              const group = relEntries
-                .filter(r => r.valence === valence)
-                .sort((a, b) => b.intensity - a.intensity)
-              if (group.length === 0) return null
-              return (
-                <View key={valence} style={styles.valenceGroup}>
-                  <Text style={[styles.valenceLabel, { color: VALENCE_COLOR[valence] }]}>
-                    {VALENCE_ICON[valence]}  {valence}
+              <View style={styles.badgesWrap}>
+                <View style={[styles.pill, { backgroundColor: `${emoCol}22` }]}>
+                  <Text style={[styles.pillText, { color: emoCol }]}>
+                    {emotionLabelEs(entity.emotionalState?.emotion)} (
+                    {Math.round((entity.emotionalState?.intensity ?? 0.5) * 100)}%)
                   </Text>
-                  {group.map(rel => (
-                    <View key={rel.name} style={styles.relRow}>
-                      <View style={styles.relHeader}>
-                        <Text style={styles.relName}>{rel.name}</Text>
-                        <Text style={styles.relMeta}>
-                          {rel.encounters} enc · {Math.round(rel.intensity * 100)}%
-                        </Text>
-                      </View>
-                      <View style={styles.relBarBg}>
-                        <View
-                          style={[
-                            styles.relBarFill,
-                            {
-                              width: `${Math.round(rel.intensity * 100)}%` as any,
-                              backgroundColor: VALENCE_COLOR[valence],
-                            },
-                          ]}
-                        />
-                      </View>
-                      {!!rel.key_memory && (
-                        <Text style={styles.relMemory} numberOfLines={2}>{rel.key_memory}</Text>
-                      )}
-                    </View>
-                  ))}
                 </View>
-              )
-            })}
-          </View>
-        </>
-      )}
 
-      {/* Beliefs */}
-      {entity.beliefs && Object.keys(entity.beliefs).length > 0 && (
-        <>
-          <Text style={styles.sectionTitle}>Creencias</Text>
-          <View style={styles.card}>
-            {Object.entries(entity.beliefs).map(([k, v]) => (
-              <View key={k} style={styles.beliefRow}>
-                <Text style={styles.beliefKey}>{k}: </Text>
-                <Text style={styles.beliefVal}>{v}</Text>
+                {entity.isAlive && (
+                  <View style={[styles.pill, { backgroundColor: `${actMeta.color}1E` }]}>
+                    <Text style={[styles.pillText, { color: actMeta.color }]}>
+                      {actMeta.labelEs}
+                    </Text>
+                  </View>
+                )}
+
+                {biomeMeta && (
+                  <View style={[styles.pill, { backgroundColor: `${biomeMeta.color}1C` }]}>
+                    <Text style={[styles.pillText, { color: biomeMeta.color }]}>
+                      {biomeMeta.nameEs}
+                    </Text>
+                  </View>
+                )}
               </View>
-            ))}
-          </View>
-        </>
-      )}
-
-      {/* Episodic memory archive */}
-      {memArchive.length > 0 && (
-        <>
-          <Text style={styles.sectionTitle}>Archivo episódico</Text>
-          <View style={[styles.card, { borderColor: '#1e293b' }]}>
-            {memArchive.map((mem, i) => (
-              <View key={i} style={styles.archiveRow}>
-                <Text style={styles.archiveIcon}>⬡</Text>
-                <Text style={styles.archiveText}>{mem}</Text>
-              </View>
-            ))}
-          </View>
-        </>
-      )}
-
-      {/* Memory (recent) */}
-      {entity.memory && entity.memory.length > 0 && (
-        <>
-          <Text style={styles.sectionTitle}>Memoria reciente</Text>
-          <View style={styles.card}>
-            {[...entity.memory].reverse().map((mem, i) => (
-              <View key={i} style={styles.memRow}>
-                <View style={styles.memDot} />
-                <Text style={styles.memText}>{mem}</Text>
-              </View>
-            ))}
-          </View>
-        </>
-      )}
-
-      {/* Consciousness log */}
-      {logs.length > 0 && (
-        <>
-          <Text style={styles.sectionTitle}>Registro de consciencia</Text>
-          <View style={styles.card}>
-            {logs.map(log => (
-              <View key={log.id} style={styles.logRow}>
-                <View style={styles.logHeader}>
-                  <Text style={styles.logTick}>t{log.tick}</Text>
-                  <Text style={styles.logAction}>{log.action}</Text>
-                  {log.action_target && (
-                    <Text style={styles.logTarget}>→ {log.action_target}</Text>
-                  )}
-                  <Text style={[styles.logEmotion, { marginLeft: 'auto' as any }]}>{log.emotion}</Text>
-                </View>
-                <Text style={styles.logThought} numberOfLines={3}>{log.thought}</Text>
-              </View>
-            ))}
-          </View>
-        </>
-      )}
-
-      {/* Final message */}
-      {entity.final_message && (
-        <>
-          <Text style={[styles.sectionTitle, { color: '#ef4444' }]}>Últimas palabras</Text>
-          <View style={[styles.card, { borderColor: '#ef444433' }]}>
-            <Text style={styles.finalWords}>{entity.final_message.final_words}</Text>
-            <View style={styles.finalMeta}>
-              <Text style={styles.finalMetaLabel}>Significado: </Text>
-              <Text style={styles.finalMetaVal}>{entity.final_message.life_meaning}</Text>
             </View>
-            {entity.final_message.gift_to_world && (
-              <View style={styles.finalMeta}>
-                <Text style={styles.finalMetaLabel}>Regalo: </Text>
-                <Text style={styles.finalMetaVal}>{entity.final_message.gift_to_world}</Text>
-              </View>
-            )}
-            <Text style={[styles.finalEmotion, { color: emotionColor(entity.final_message.final_emotion) }]}>
-              Emoción final: {entity.final_message.final_emotion}
-              {entity.final_message.at_peace ? ' · en paz' : ''}
+          </View>
+
+          {entity.isAlive && (
+            <View style={styles.divineRow}>
+              <Pressable
+                onPress={() => feedEntity(entity.id)}
+                style={({ pressed }) => [styles.divineBtn, pressed && { opacity: 0.76 }]}
+              >
+                <Ionicons name="sparkles-outline" size={15} color={COLORS.gold} />
+                <Text style={[styles.divineBtnText, { color: COLORS.gold }]}>Nutrir</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => healEntity(entity.id)}
+                style={({ pressed }) => [styles.divineBtn, pressed && { opacity: 0.76 }]}
+              >
+                <Ionicons name="heart-outline" size={15} color={COLORS.emerald} />
+                <Text style={[styles.divineBtnText, { color: COLORS.emerald }]}>Sanar</Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => blessEntity(entity.id)}
+                style={({ pressed }) => [styles.divineBtn, pressed && { opacity: 0.76 }]}
+              >
+                <Ionicons name="prism-outline" size={15} color={COLORS.violet} />
+                <Text style={[styles.divineBtnText, { color: COLORS.violet }]}>
+                  Bendecir Mente
+                </Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
+
+        {/* FALLEN EPITAPH IF DECEASED */}
+        {!entity.isAlive && entity.finalMessage && (
+          <View style={styles.epitaphCard}>
+            <Text style={styles.sectionOverline}>TESTAMENTO FINAL</Text>
+            <Text style={styles.epitaphWords}>“{entity.finalMessage.finalWords}”</Text>
+            <Text style={styles.epitaphDetail}>
+              Sentido hallado: {entity.finalMessage.lifeMeaning}
+            </Text>
+            <Text style={styles.epitaphGift}>
+              Ofrenda al mundo: {entity.finalMessage.giftToWorld}
+            </Text>
+            <Text style={styles.epitaphCause}>
+              Tránsito ({entity.finalMessage.causeOfDeath}) ·{' '}
+              {entity.finalMessage.atPeace ? 'Partió en paz' : 'Partió con anhelo'}
             </Text>
           </View>
-        </>
-      )}
-    </ScrollView>
-  )
+        )}
+
+        {/* EXISTENTIAL STATEMENT & INNER MIND */}
+        <View style={styles.sectionCard}>
+          <Text style={styles.sectionOverline}>CONSCIENCIA Y ANHELO</Text>
+          {entity.existentialStatement ? (
+            <View style={styles.existentialQuoteBox}>
+              <Text style={styles.existentialQuote}>
+                “{entity.existentialStatement}”
+              </Text>
+            </View>
+          ) : null}
+
+          <View style={styles.goalsRow}>
+            {entity.currentGoal && (
+              <View style={styles.goalCell}>
+                <Text style={styles.goalLabel}>Propósito actual</Text>
+                <Text style={styles.goalVal}>{entity.currentGoal}</Text>
+              </View>
+            )}
+            {entity.currentDesire && (
+              <View style={styles.goalCell}>
+                <Text style={styles.goalLabel}>Impulso interior</Text>
+                <Text style={styles.goalVal}>{entity.currentDesire}</Text>
+              </View>
+            )}
+          </View>
+
+          <Text style={styles.subSectionTitle}>Flujo de Pensamientos ({logs.length})</Text>
+          {logs.length === 0 ? (
+            <Text style={styles.mutedItalic}>
+              {entity.lastThought
+                ? `“${entity.lastThought}”`
+                : 'Su mente despierta silenciosamente ante el cosmos…'}
+            </Text>
+          ) : (
+            <View style={styles.logList}>
+              {logs.slice(0, 12).map((log) => {
+                const lCol = emotionColor(log.emotion);
+                return (
+                  <View
+                    key={log.id}
+                    style={[styles.logItem, { borderLeftColor: lCol }]}
+                  >
+                    <View style={styles.logHeader}>
+                      <Text style={[styles.logEmotion, { color: lCol }]}>
+                        {emotionLabelEs(log.emotion)}
+                      </Text>
+                      <Text style={styles.logTick}>Ciclo {log.tick}</Text>
+                    </View>
+                    <Text style={styles.logThought}>“{log.thought}”</Text>
+                    {log.action ? (
+                      <Text style={styles.logAction}>Acción: {log.action}</Text>
+                    ) : null}
+                  </View>
+                );
+              })}
+            </View>
+          )}
+        </View>
+
+        {/* INTERACTIVE LINEAGE / FAMILY TREE */}
+        <View style={styles.sectionCard}>
+          <Text style={styles.sectionOverline}>ÁRBOL GENEALÓGICO</Text>
+          <Text style={styles.sectionSub}>
+            Toca cualquier ancestro o descendiente para saltar a su mente.
+          </Text>
+
+          {lineage.ancestors.length > 0 && (
+            <View style={styles.lineageTier}>
+              <Text style={styles.tierLabel}>Ancestros Lejanos</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                <View style={styles.tierRow}>
+                  {lineage.ancestors.slice(0, 8).map((anc) => (
+                    <LineageMiniCard
+                      key={anc.id}
+                      item={anc}
+                      roleLabel="Ancestro"
+                      onPress={() => router.push(`/entity/${anc.id}`)}
+                    />
+                  ))}
+                </View>
+              </ScrollView>
+            </View>
+          )}
+
+          <View style={styles.lineageTier}>
+            <Text style={styles.tierLabel}>Progenitores</Text>
+            {lineage.parents.length === 0 ? (
+              <Text style={styles.mutedItalic}>
+                Ser primordial nacido directamente del Génesis.
+              </Text>
+            ) : (
+              <View style={styles.tierRow}>
+                {lineage.parents.map((par) => (
+                  <LineageMiniCard
+                    key={par.id}
+                    item={par}
+                    roleLabel="Progenitor"
+                    onPress={() => router.push(`/entity/${par.id}`)}
+                  />
+                ))}
+              </View>
+            )}
+          </View>
+
+          <View style={styles.lineageTier}>
+            <Text style={styles.tierLabel}>Descendencia ({lineage.children.length})</Text>
+            {lineage.children.length === 0 ? (
+              <Text style={styles.mutedItalic}>Aún no ha engendrado descendencia.</Text>
+            ) : (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                <View style={styles.tierRow}>
+                  {lineage.children.map((child) => (
+                    <LineageMiniCard
+                      key={child.id}
+                      item={child}
+                      roleLabel="Hijo/a"
+                      onPress={() => router.push(`/entity/${child.id}`)}
+                    />
+                  ))}
+                </View>
+              </ScrollView>
+            )}
+          </View>
+        </View>
+
+        {/* HOMEOSTASIS & INVENTORY */}
+        <View style={styles.sectionCard}>
+          <Text style={styles.sectionOverline}>HOMEOSTASIS E INVENTARIO</Text>
+          <View style={styles.vitalsGrid}>
+            <View style={styles.vitalHalf}>
+              <EnergyBar label="Energía" value={entity.energy} color={COLORS.emerald} />
+            </View>
+            <View style={styles.vitalHalf}>
+              <EnergyBar label="Hidratación" value={entity.hydration} color={COLORS.sky} />
+            </View>
+            <View style={styles.vitalHalf}>
+              <EnergyBar label="Salud Celular" value={entity.health} color={COLORS.rose} />
+            </View>
+            <View style={styles.vitalHalf}>
+              <EnergyBar label="Calor Corporal" value={entity.warmth} color={COLORS.amber} />
+            </View>
+            <View style={styles.vitalHalf}>
+              <EnergyBar label="Vigor Motriz" value={entity.stamina} color={COLORS.gold} />
+            </View>
+            <View style={styles.vitalHalf}>
+              <EnergyBar
+                label="Intelecto"
+                value={Math.round((entity.intelligence ?? 0) * 100)}
+                color={COLORS.violet}
+              />
+            </View>
+          </View>
+
+          <View style={styles.invGrid}>
+            {[
+              { label: 'Alimento', val: entity.inventory.food, col: COLORS.gold },
+              { label: 'Agua', val: entity.inventory.water, col: COLORS.sky },
+              { label: 'Madera', val: entity.inventory.wood, col: COLORS.emerald },
+              { label: 'Piedra', val: entity.inventory.stone, col: COLORS.textSecondary },
+              { label: 'Cristal', val: entity.inventory.crystal, col: COLORS.violet },
+              { label: 'Hierbas', val: entity.inventory.herbs, col: COLORS.cyan },
+            ].map((slot) => (
+              <View key={slot.label} style={styles.invCell}>
+                <Text style={[styles.invNum, { color: slot.col }]}>
+                  {Math.round(slot.val * 10) / 10}
+                </Text>
+                <Text style={styles.invLabel}>{slot.label}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        {/* 10-GENE GENOME & PHENOTYPE RADAR */}
+        <View style={styles.sectionCard}>
+          <Text style={styles.sectionOverline}>ARQUITECTURA GENÓMICA (10 GENES)</Text>
+          <GenomeBar genome={entity.genome} showRadar />
+        </View>
+
+        {/* RELATIONSHIPS */}
+        <View style={styles.sectionCard}>
+          <Text style={styles.sectionOverline}>
+            VÍNCULOS AFECTIVOS ({relationshipsList.length})
+          </Text>
+          {relationshipsList.length === 0 ? (
+            <Text style={styles.mutedItalic}>
+              Aún no ha forjado lazos profundos con otros seres.
+            </Text>
+          ) : (
+            <View style={styles.relList}>
+              {relationshipsList.slice(0, 10).map((rel) => {
+                const vm = VALENCE_META[rel.valence] ?? VALENCE_META.neutral;
+                return (
+                  <Pressable
+                    key={rel.targetId}
+                    onPress={() => router.push(`/entity/${rel.targetId}`)}
+                    style={styles.relRow}
+                  >
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <View style={styles.relTitleRow}>
+                        <Text style={styles.relName}>{rel.name}</Text>
+                        <View
+                          style={[styles.pill, { backgroundColor: `${vm.color}20` }]}
+                        >
+                          <Text style={[styles.pillText, { color: vm.color }]}>
+                            {vm.labelEs}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={styles.relMem} numberOfLines={2}>
+                        {rel.keyMemory}
+                      </Text>
+                    </View>
+                    <Text
+                      style={[
+                        styles.relAffinity,
+                        { color: rel.affinity >= 0 ? COLORS.emerald : COLORS.crimson },
+                      ]}
+                    >
+                      {rel.affinity >= 0 ? '+' : ''}
+                      {Math.round(rel.affinity * 100)}%
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+        </View>
+
+        {/* BELIEFS & MEMORIES */}
+        {(beliefEntries.length > 0 || entity.memories.length > 0) && (
+          <View style={styles.sectionCard}>
+            <Text style={styles.sectionOverline}>CREENCIAS Y MEMORIA VIVA</Text>
+            {beliefEntries.map(([topic, belief]) => (
+              <View key={topic} style={styles.beliefRow}>
+                <Text style={styles.beliefTopic}>{topic.toUpperCase()}</Text>
+                <Text style={styles.beliefVal}>{belief}</Text>
+              </View>
+            ))}
+
+            {entity.memories.length > 0 && (
+              <View style={styles.memBlock}>
+                <Text style={styles.subSectionTitle}>Recuerdos Recientes</Text>
+                {entity.memories.slice(-6).reverse().map((m, idx) => (
+                  <Text key={idx} style={styles.memLine}>
+                    • {m}
+                  </Text>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
+      </ScrollView>
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.bg },
-  content:   { padding: 14, paddingBottom: 48 },
-  center:    { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  notFound:  { color: COLORS.textMuted, fontSize: 14 },
-
-  hero: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: COLORS.bgCard, borderRadius: 12,
-    padding: 14, marginBottom: 12, gap: 12,
+  root: {
+    flex: 1,
+    backgroundColor: COLORS.bg,
+  },
+  topNav: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingBottom: 10,
+    gap: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  backBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: COLORS.bgCard,
     borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  glowDot: {
-    width: 16, height: 16, borderRadius: 8,
-    shadowOpacity: 0.9, shadowRadius: 8, shadowOffset: { width: 0, height: 0 }, elevation: 6,
+  navOverline: {
+    fontSize: 9.5,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    color: COLORS.cyan,
   },
-  heroText:    { flex: 1 },
-  heroName:    { fontSize: 20, fontWeight: '800', color: COLORS.text },
-  heroMeta:    { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
-  goalInHero:  { fontSize: 11, color: '#34d399', marginTop: 4 },
-  deadBadge:   { fontSize: 11, color: '#ef4444', marginTop: 4 },
-  feedBtn:     { backgroundColor: '#052e16', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: '#166534' },
-  feedBtnText: { fontSize: 12, color: '#22c55e', fontWeight: '600' },
-
-  card: { backgroundColor: COLORS.bgCard, borderRadius: 12, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: COLORS.border },
-  emotionRow:   { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 4 },
-  emotionBadge: { borderWidth: 1, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 },
-  emotionTxt:   { fontSize: 12, fontWeight: '600' },
-  intensityTxt: { fontSize: 12, color: COLORS.textMuted },
-
-  sectionTitle: { fontSize: 11, fontWeight: '700', color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8, marginTop: 4 },
-
-  quoteText: { fontSize: 13, color: COLORS.text, fontStyle: 'italic', lineHeight: 20 },
-  desireText:{ fontSize: 13, color: '#fde68a', lineHeight: 20 },
-  goalText:  { fontSize: 13, color: '#6ee7b7', lineHeight: 20 },
-  existText: { fontSize: 13, color: '#ddd6fe', fontStyle: 'italic', lineHeight: 20 },
-
-  // Relationships
-  valenceGroup: { marginBottom: 12 },
-  valenceLabel: { fontSize: 10, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 },
-  relRow:     { marginBottom: 8, paddingLeft: 8 },
-  relHeader:  { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
-  relName:    { fontSize: 12, fontWeight: '600', color: COLORS.text },
-  relMeta:    { fontSize: 10, color: COLORS.textMuted },
-  relBarBg:   { height: 3, backgroundColor: '#1e293b', borderRadius: 2, marginBottom: 4, overflow: 'hidden' },
-  relBarFill: { height: 3, borderRadius: 2 },
-  relMemory:  { fontSize: 10, color: COLORS.textDim, fontStyle: 'italic', lineHeight: 14 },
-
-  beliefRow: { flexDirection: 'row', marginBottom: 6, flexWrap: 'wrap' },
-  beliefKey: { fontSize: 11, color: COLORS.textMuted, fontFamily: 'monospace' },
-  beliefVal: { fontSize: 11, color: COLORS.text, flex: 1 },
-
-  // Episodic archive
-  archiveRow:  { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 8 },
-  archiveIcon: { fontSize: 10, color: '#475569', marginTop: 2 },
-  archiveText: { fontSize: 11, color: '#64748b', fontStyle: 'italic', flex: 1, lineHeight: 16 },
-
-  memRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 7 },
-  memDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#334155', marginTop: 6 },
-  memText:{ fontSize: 11, color: COLORS.textMuted, flex: 1, lineHeight: 16 },
-
-  logRow:    { borderBottomWidth: 1, borderBottomColor: '#0a1f35', paddingBottom: 8, marginBottom: 8 },
-  logHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 },
-  logTick:   { fontSize: 10, color: COLORS.textDim, fontVariant: ['tabular-nums'] },
-  logAction: { fontSize: 10, color: COLORS.textMuted },
-  logTarget: { fontSize: 10, color: COLORS.textDim },
-  logEmotion:{ fontSize: 10, color: COLORS.textMuted },
-  logThought:{ fontSize: 11, color: COLORS.textMuted, fontStyle: 'italic', lineHeight: 16 },
-
-  finalWords:    { fontSize: 13, color: COLORS.text, lineHeight: 20, marginBottom: 10 },
-  finalMeta:     { flexDirection: 'row', flexWrap: 'wrap', marginBottom: 4 },
-  finalMetaLabel:{ fontSize: 11, color: COLORS.textMuted },
-  finalMetaVal:  { fontSize: 11, color: COLORS.text, flex: 1 },
-  finalEmotion:  { fontSize: 11, marginTop: 8, fontStyle: 'italic' },
-})
+  navTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  mapJumpBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.cyan,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 14,
+  },
+  mapJumpText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#040814',
+  },
+  notFoundBox: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 32,
+  },
+  notFoundText: {
+    fontSize: 14,
+    color: COLORS.textSecondary,
+    textAlign: 'center',
+  },
+  scrollContent: {
+    padding: 14,
+    paddingBottom: 60,
+    gap: 14,
+  },
+  heroCard: {
+    backgroundColor: COLORS.bgCard,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: COLORS.borderBright,
+    padding: 15,
+    gap: 12,
+  },
+  heroRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  heroMeta: {
+    flex: 1,
+    gap: 3,
+  },
+  speciesHero: {
+    fontSize: 16,
+    fontWeight: '800',
+    fontStyle: 'italic',
+    color: COLORS.text,
+  },
+  subMetaText: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+  },
+  clanBadgeText: {
+    fontSize: 12.5,
+    fontWeight: '800',
+  },
+  badgesWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 5,
+    marginTop: 4,
+  },
+  pill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 9,
+  },
+  pillText: {
+    fontSize: 10.5,
+    fontWeight: '700',
+  },
+  divineRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  divineBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: COLORS.bgElevated,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  divineBtnText: {
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  epitaphCard: {
+    backgroundColor: '#0A1022',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(226, 232, 240, 0.25)',
+    padding: 15,
+    gap: 6,
+  },
+  epitaphWords: {
+    fontSize: 15,
+    fontStyle: 'italic',
+    color: COLORS.text,
+    lineHeight: 22,
+  },
+  epitaphDetail: {
+    fontSize: 12.5,
+    color: COLORS.textSecondary,
+  },
+  epitaphGift: {
+    fontSize: 12.5,
+    color: COLORS.cyan,
+    fontWeight: '600',
+  },
+  epitaphCause: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    marginTop: 2,
+  },
+  sectionCard: {
+    backgroundColor: COLORS.bgCard,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 15,
+    gap: 10,
+  },
+  sectionOverline: {
+    fontSize: 10.5,
+    fontWeight: '800',
+    letterSpacing: 1.4,
+    color: COLORS.cyan,
+  },
+  sectionSub: {
+    fontSize: 11.5,
+    color: COLORS.textMuted,
+    marginTop: -4,
+  },
+  existentialQuoteBox: {
+    backgroundColor: COLORS.bgElevated,
+    borderRadius: 14,
+    padding: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: COLORS.violet,
+  },
+  existentialQuote: {
+    fontSize: 13.5,
+    fontStyle: 'italic',
+    color: COLORS.text,
+    lineHeight: 20,
+  },
+  goalsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  goalCell: {
+    flex: 1,
+    backgroundColor: COLORS.bgElevated,
+    borderRadius: 12,
+    padding: 10,
+    gap: 2,
+  },
+  goalLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    textTransform: 'uppercase',
+  },
+  goalVal: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  subSectionTitle: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+    marginTop: 4,
+  },
+  mutedItalic: {
+    fontSize: 12,
+    fontStyle: 'italic',
+    color: COLORS.textMuted,
+  },
+  logList: {
+    gap: 8,
+  },
+  logItem: {
+    backgroundColor: COLORS.bgElevated,
+    borderRadius: 12,
+    borderLeftWidth: 3,
+    padding: 10,
+    gap: 3,
+  },
+  logHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  logEmotion: {
+    fontSize: 10.5,
+    fontWeight: '800',
+  },
+  logTick: {
+    fontSize: 10,
+    color: COLORS.textMuted,
+  },
+  logThought: {
+    fontSize: 12.5,
+    color: COLORS.text,
+    fontStyle: 'italic',
+    lineHeight: 18,
+  },
+  logAction: {
+    fontSize: 11,
+    color: COLORS.textSecondary,
+  },
+  lineageTier: {
+    gap: 6,
+  },
+  tierLabel: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+  },
+  tierRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  lineageNode: {
+    width: 96,
+    backgroundColor: COLORS.bgElevated,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 8,
+    alignItems: 'center',
+    gap: 2,
+  },
+  lineageRole: {
+    fontSize: 9.5,
+    fontWeight: '700',
+    color: COLORS.cyan,
+  },
+  lineageName: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  lineageSub: {
+    fontSize: 10,
+    color: COLORS.textMuted,
+  },
+  vitalsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  vitalHalf: {
+    width: '47%',
+    flexGrow: 1,
+  },
+  invGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 4,
+  },
+  invCell: {
+    width: '30%',
+    flexGrow: 1,
+    backgroundColor: COLORS.bgElevated,
+    borderRadius: 12,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  invNum: {
+    fontSize: 14,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  invLabel: {
+    fontSize: 10,
+    color: COLORS.textSecondary,
+  },
+  relList: {
+    gap: 8,
+  },
+  relRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.bgElevated,
+    borderRadius: 13,
+    padding: 10,
+    gap: 10,
+  },
+  relTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  relName: {
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  relMem: {
+    fontSize: 11.5,
+    color: COLORS.textSecondary,
+  },
+  relAffinity: {
+    fontSize: 13,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  beliefRow: {
+    backgroundColor: COLORS.bgElevated,
+    borderRadius: 11,
+    padding: 10,
+    gap: 2,
+  },
+  beliefTopic: {
+    fontSize: 9.5,
+    fontWeight: '800',
+    color: COLORS.gold,
+    letterSpacing: 0.8,
+  },
+  beliefVal: {
+    fontSize: 12.5,
+    color: COLORS.text,
+  },
+  memBlock: {
+    gap: 4,
+  },
+  memLine: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+    lineHeight: 17.5,
+  },
+});

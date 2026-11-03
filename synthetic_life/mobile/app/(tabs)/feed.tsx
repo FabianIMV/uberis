@@ -1,284 +1,235 @@
-/**
- * Chronicles — a rich event log showing what happens in the world.
- * Each event type has its own card design and visual weight.
- */
-import { FlatList, StyleSheet, Text, View } from 'react-native'
-import { useSimulation } from '../../context/SimulationContext'
-import { COLORS, emotionColor, ZONE_COLOR } from '../../constants/theme'
-import type { LiveEvent } from '../../engine/types'
+import React, { useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
+import { useSimulation } from '@/context/SimulationContext';
+import type { LiveEventCategory } from '@/engine/types';
+import EventsFeed from '@/components/EventsFeed';
+import { COLORS } from '@/constants/theme';
+import { hapticSelection } from '@/audio/haptics';
 
-// ── Event card renderers ──────────────────────────────────────────────────────
+type ChronicleFilter =
+  | 'all'
+  | 'births'
+  | 'speciation'
+  | 'civilization'
+  | 'philosophy'
+  | 'divine'
+  | 'hazards';
 
-function EncounterCard({ ev }: { ev: LiveEvent }) {
-  const nameA = (ev.entity_a as any)?.name ?? '?'
-  const nameB = (ev.entity_b as any)?.name ?? '?'
-  const outcome = String(ev.outcome ?? '')
-  const valA = (ev as any).relationship_a_to_b ?? 'neutral'
-  const valB = (ev as any).relationship_b_to_a ?? 'neutral'
-  const relColor = valA === 'friend' ? '#34d399' : valA === 'rival' ? '#f87171' : valA === 'family' ? '#a78bfa' : '#64748b'
+const FILTERS: Array<{
+  id: ChronicleFilter;
+  labelEs: string;
+  categories?: LiveEventCategory[];
+  color: string;
+}> = [
+  { id: 'all', labelEs: 'Todo', color: COLORS.cyan },
+  {
+    id: 'births',
+    labelEs: 'Nacimientos',
+    categories: ['birth', 'romance'],
+    color: COLORS.emerald,
+  },
+  {
+    id: 'speciation',
+    labelEs: 'Especiación',
+    categories: ['speciation'],
+    color: '#E879F9',
+  },
+  {
+    id: 'civilization',
+    labelEs: 'Clanes y Ciencia',
+    categories: ['tribe_founded', 'tech_discovered', 'structure_built'],
+    color: COLORS.gold,
+  },
+  {
+    id: 'philosophy',
+    labelEs: 'Filosofía',
+    categories: ['philosophy', 'encounter'],
+    color: COLORS.violet,
+  },
+  {
+    id: 'divine',
+    labelEs: 'Intervención Divina',
+    categories: ['divine_intervention'],
+    color: COLORS.amber,
+  },
+  {
+    id: 'hazards',
+    labelEs: 'Clima y Umbra',
+    categories: ['predator', 'conflict', 'death', 'world_weather'],
+    color: COLORS.crimson,
+  },
+];
 
-  return (
-    <View style={[styles.card, styles.encounterCard]}>
-      <View style={styles.encounterHeader}>
-        <View style={[styles.encounterDot, { backgroundColor: '#a78bfa' }]} />
-        <Text style={styles.encounterTitle}>⚡ Encuentro</Text>
-        {ev.tick != null && <Text style={styles.tick}>t{ev.tick}</Text>}
-      </View>
-      <View style={styles.encounterNames}>
-        <Text style={styles.entityName}>{nameA}</Text>
-        <View style={[styles.relBridge, { backgroundColor: relColor + '44', borderColor: relColor + '66' }]}>
-          <Text style={[styles.relBridgeTxt, { color: relColor }]}>
-            {valA === 'friend' ? '💚' : valA === 'rival' ? '⚔️' : valA === 'family' ? '💜' : '·'}
-            {' '}{valB === 'friend' ? '💚' : valB === 'rival' ? '⚔️' : valB === 'family' ? '💜' : '·'}
-          </Text>
-        </View>
-        <Text style={styles.entityName}>{nameB}</Text>
-      </View>
-      {outcome && (
-        <Text style={styles.encounterOutcome} numberOfLines={2}>{outcome}</Text>
-      )}
-      {(ev as any).dialogue?.[0] && (
-        <View style={styles.dialogueLine}>
-          <Text style={styles.dialogueWho}>{(ev as any).dialogue[0].speaker}:</Text>
-          <Text style={styles.dialogueTxt} numberOfLines={2}>
-            "{(ev as any).dialogue[0].text}"
-          </Text>
-        </View>
-      )}
-    </View>
-  )
-}
-
-function BirthCard({ ev }: { ev: LiveEvent }) {
-  const zone = String(ev.zone ?? ev.current_zone ?? '')
-  const zColor = ZONE_COLOR[zone] ?? '#34d399'
-  return (
-    <View style={[styles.card, styles.birthCard]}>
-      <View style={styles.cardHeader}>
-        <Text style={styles.birthIcon}>✨</Text>
-        <View style={styles.cardHeaderText}>
-          <Text style={styles.birthName}>{ev.name as string}</Text>
-          <Text style={styles.birthMeta}>
-            Gen {ev.generation as number ?? 1}
-            {ev.parent_a ? ` · hijo/a de ${ev.parent_a}` : ''}
-            {zone ? (
-              <Text style={{ color: zColor }}> · {zone}</Text>
-            ) : null}
-          </Text>
-        </View>
-        {ev.tick != null && <Text style={styles.tick}>t{ev.tick}</Text>}
-      </View>
-    </View>
-  )
-}
-
-function DeathCard({ ev }: { ev: LiveEvent }) {
-  const finalWords = String(ev.final_words ?? ev.last_words ?? '')
-  const meaning    = String(ev.life_meaning ?? '')
-  return (
-    <View style={[styles.card, styles.deathCard]}>
-      <View style={styles.cardHeader}>
-        <Text style={styles.deathIcon}>🌑</Text>
-        <View style={styles.cardHeaderText}>
-          <Text style={styles.deathName}>{ev.name as string}</Text>
-          <Text style={styles.deathMeta}>Ha concluido su viaje</Text>
-        </View>
-        {ev.tick != null && <Text style={[styles.tick, { color: '#475569' }]}>t{ev.tick}</Text>}
-      </View>
-      {finalWords ? (
-        <Text style={styles.deathWords} numberOfLines={3}>"{finalWords}"</Text>
-      ) : null}
-      {meaning ? (
-        <Text style={styles.deathMeaning} numberOfLines={2}>{meaning}</Text>
-      ) : null}
-    </View>
-  )
-}
-
-function ThoughtCard({ ev }: { ev: LiveEvent }) {
-  const thought  = String(ev.thought ?? ev.description ?? '')
-  const emotion  = String(ev.emotion ?? 'neutral')
-  const eColor   = emotionColor(emotion)
-  const zone     = String(ev.zone ?? ev.current_zone ?? '')
-  const zColor   = ZONE_COLOR[zone] ?? COLORS.textMuted
-  return (
-    <View style={[styles.card, styles.thoughtCard, { borderLeftColor: eColor + '66' }]}>
-      <View style={styles.cardHeader}>
-        <View style={[styles.emotionDot, { backgroundColor: eColor }]} />
-        <Text style={[styles.thoughtName, { color: eColor + 'cc' }]}>{ev.name as string}</Text>
-        {zone ? <Text style={[styles.zoneTag, { color: zColor }]}>{zone}</Text> : null}
-        <View style={{ flex: 1 }} />
-        {ev.tick != null && <Text style={styles.tick}>t{ev.tick}</Text>}
-      </View>
-      <Text style={styles.thoughtText} numberOfLines={4}>{thought}</Text>
-      {(ev as any).action && (ev as any).action !== 'think' && (
-        <Text style={styles.thoughtAction}>→ {(ev as any).action}</Text>
-      )}
-    </View>
-  )
-}
-
-function GriefCard({ ev }: { ev: LiveEvent }) {
-  return (
-    <View style={[styles.card, styles.griefCard]}>
-      <View style={styles.cardHeader}>
-        <Text style={styles.griefIcon}>💔</Text>
-        <Text style={styles.griefText}>
-          <Text style={styles.griefName}>{ev.griever as string}</Text>
-          <Text style={styles.griefConnector}> llora a </Text>
-          <Text style={styles.griefName}>{ev.lost as string}</Text>
-        </Text>
-        {ev.tick != null && <Text style={styles.tick}>t{ev.tick}</Text>}
-      </View>
-    </View>
-  )
-}
-
-function WorldEventCard({ ev }: { ev: LiveEvent }) {
-  return (
-    <View style={[styles.card, styles.worldCard]}>
-      <View style={styles.cardHeader}>
-        <Text style={styles.worldIcon}>🌍</Text>
-        <Text style={styles.worldText} numberOfLines={3}>
-          {String(ev.description ?? ev.type)}
-        </Text>
-        {ev.tick != null && <Text style={styles.tick}>t{ev.tick}</Text>}
-      </View>
-    </View>
-  )
-}
-
-function FedCard({ ev }: { ev: LiveEvent }) {
-  return (
-    <View style={[styles.card, styles.fedCard]}>
-      <View style={styles.cardHeader}>
-        <Text style={styles.fedIcon}>🫧</Text>
-        <Text style={styles.fedText}>{ev.name as string} fue alimentado</Text>
-        {ev.tick != null && <Text style={styles.tick}>t{ev.tick}</Text>}
-      </View>
-    </View>
-  )
-}
-
-function EventCard({ ev }: { ev: LiveEvent }) {
-  const t = ev.type
-  if (t === 'encounter')                          return <EncounterCard ev={ev} />
-  if (t === 'entity_born'   || t === 'birth')     return <BirthCard     ev={ev} />
-  if (t === 'entity_died'   || t === 'death')     return <DeathCard     ev={ev} />
-  if (t === 'entity_thought'|| t === 'thought')   return <ThoughtCard   ev={ev} />
-  if (t === 'entity_grief'  || t === 'grief')     return <GriefCard     ev={ev} />
-  if (t === 'world_event')                        return <WorldEventCard ev={ev} />
-  if (t === 'entity_fed')                         return <FedCard       ev={ev} />
-  return null
-}
-
-// ── Screen ────────────────────────────────────────────────────────────────────
 export default function ChroniclesScreen() {
-  const { liveEvents, worldState } = useSimulation()
+  const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const { simState, focusWorldPoint } = useSimulation();
+  const [filter, setFilter] = useState<ChronicleFilter>('all');
+
+  const activeFilterDef = useMemo(
+    () => FILTERS.find((f) => f.id === filter) ?? FILTERS[0],
+    [filter]
+  );
+
+  const filteredEvents = useMemo(() => {
+    const all = simState.liveEvents ?? [];
+    if (!activeFilterDef.categories) return all;
+    const allowed = new Set(activeFilterDef.categories);
+    return all.filter((ev) => allowed.has(ev.category));
+  }, [simState.liveEvents, activeFilterDef]);
+
+  const world = simState.world;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.root, { paddingTop: insets.top + 8 }]}>
       <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>Crónicas</Text>
-          <Text style={styles.subtitle}>turno {worldState.current_tick} · {liveEvents.length} eventos</Text>
-        </View>
-        <View style={styles.liveDot} />
+        <Text style={styles.overline}>ARCHIVO HISTÓRICO</Text>
+        <Text style={styles.title}>Crónicas del Continente</Text>
       </View>
 
-      <FlatList
-        data={liveEvents}
-        keyExtractor={ev => String(ev.id)}
-        contentContainerStyle={styles.list}
-        renderItem={({ item }) => <EventCard ev={item} />}
-        showsVerticalScrollIndicator={false}
-        ListEmptyComponent={
-          <View style={styles.empty}>
-            <Text style={styles.emptyIcon}>🌌</Text>
-            <Text style={styles.emptyText}>El mundo despierta…</Text>
-          </View>
-        }
+      {/* Summary Counters */}
+      <View style={styles.summaryStrip}>
+        <View style={styles.summaryCell}>
+          <Text style={[styles.summaryNum, { color: COLORS.emerald }]}>
+            {world?.totalBirths ?? 0}
+          </Text>
+          <Text style={styles.summaryLabel}>Nacidos</Text>
+        </View>
+        <View style={styles.summaryCell}>
+          <Text style={[styles.summaryNum, { color: '#E879F9' }]}>
+            {world?.totalSpeciations ?? 0}
+          </Text>
+          <Text style={styles.summaryLabel}>Especiaciones</Text>
+        </View>
+        <View style={styles.summaryCell}>
+          <Text style={[styles.summaryNum, { color: COLORS.gold }]}>
+            {simState.tribes.length}
+          </Text>
+          <Text style={styles.summaryLabel}>Clanes</Text>
+        </View>
+        <View style={styles.summaryCell}>
+          <Text style={[styles.summaryNum, { color: COLORS.textSecondary }]}>
+            {world?.totalDeaths ?? 0}
+          </Text>
+          <Text style={styles.summaryLabel}>Tránsitos</Text>
+        </View>
+      </View>
+
+      {/* Filter Chips */}
+      <View style={styles.filterWrap}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.chipsScroll}
+        >
+          {FILTERS.map((f) => {
+            const active = f.id === filter;
+            return (
+              <Pressable
+                key={f.id}
+                onPress={() => {
+                  hapticSelection();
+                  setFilter(f.id);
+                }}
+                style={[
+                  styles.chip,
+                  active && {
+                    backgroundColor: `${f.color}24`,
+                    borderColor: f.color,
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.chipText,
+                    active && { color: f.color, fontWeight: '800' },
+                  ]}
+                >
+                  {f.labelEs}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      <EventsFeed
+        events={filteredEvents}
+        onPressEntity={(entityId) => router.push(`/entity/${entityId}`)}
+        onPressLocation={(x, y) => {
+          focusWorldPoint(x, y, 0.95);
+          router.navigate('/(tabs)');
+        }}
       />
     </View>
-  )
+  );
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.bg },
+  root: {
+    flex: 1,
+    backgroundColor: COLORS.bg,
+  },
   header: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 14, paddingTop: 10, paddingBottom: 10,
-    borderBottomWidth: 1, borderBottomColor: COLORS.border,
+    paddingHorizontal: 16,
+    marginBottom: 10,
   },
-  title:    { fontSize: 17, fontWeight: '800', color: COLORS.text },
-  subtitle: { fontSize: 11, color: COLORS.textMuted, marginTop: 1 },
-  liveDot:  { width: 8, height: 8, borderRadius: 4, backgroundColor: '#22c55e' },
-  list:     { padding: 10, gap: 8, paddingBottom: 40 },
-
-  card: {
-    borderRadius: 12, padding: 12,
-    borderWidth: 1, borderColor: COLORS.border,
+  overline: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+    color: COLORS.cyan,
+  },
+  title: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: COLORS.text,
+  },
+  summaryStrip: {
+    flexDirection: 'row',
+    marginHorizontal: 14,
+    marginBottom: 10,
+    gap: 8,
+  },
+  summaryCell: {
+    flex: 1,
     backgroundColor: COLORS.bgCard,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingVertical: 9,
+    alignItems: 'center',
   },
-  cardHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-  cardHeaderText: { flex: 1 },
-  tick: { fontSize: 9, color: COLORS.textDim, fontVariant: ['tabular-nums'], marginTop: 1 },
-
-  // Encounter
-  encounterCard: { borderColor: '#3730a344' },
-  encounterHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
-  encounterDot: { width: 6, height: 6, borderRadius: 3 },
-  encounterTitle: { fontSize: 11, fontWeight: '700', color: '#a78bfa', flex: 1 },
-  encounterNames: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
-  entityName: { fontSize: 13, fontWeight: '700', color: COLORS.text, flex: 1 },
-  relBridge: { borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, alignItems: 'center' },
-  relBridgeTxt: { fontSize: 12 },
-  encounterOutcome: { fontSize: 11, color: COLORS.textMuted, lineHeight: 16, marginBottom: 4 },
-  dialogueLine: { flexDirection: 'row', gap: 4, marginTop: 4 },
-  dialogueWho: { fontSize: 10, fontWeight: '700', color: '#a78bfa' },
-  dialogueTxt: { fontSize: 10, color: COLORS.textMuted, fontStyle: 'italic', flex: 1, lineHeight: 15 },
-
-  // Birth
-  birthCard: { borderColor: '#14532d66' },
-  birthIcon: { fontSize: 18 },
-  birthName: { fontSize: 14, fontWeight: '700', color: '#34d399' },
-  birthMeta: { fontSize: 11, color: COLORS.textMuted, marginTop: 1 },
-
-  // Death
-  deathCard: { borderColor: '#1e293b' },
-  deathIcon: { fontSize: 18 },
-  deathName: { fontSize: 14, fontWeight: '700', color: '#64748b' },
-  deathMeta: { fontSize: 11, color: COLORS.textDim, marginTop: 1 },
-  deathWords:   { fontSize: 12, color: COLORS.text, fontStyle: 'italic', lineHeight: 18, marginTop: 8, borderLeftWidth: 2, borderLeftColor: '#334155', paddingLeft: 8 },
-  deathMeaning: { fontSize: 10, color: COLORS.textMuted, marginTop: 5, fontStyle: 'italic' },
-
-  // Thought
-  thoughtCard: { borderLeftWidth: 3, borderColor: 'transparent' },
-  emotionDot: { width: 7, height: 7, borderRadius: 3.5, marginTop: 3 },
-  thoughtName:   { fontSize: 12, fontWeight: '700', flex: 1 },
-  zoneTag:       { fontSize: 10, fontWeight: '600' },
-  thoughtText:   { fontSize: 12, color: COLORS.text, fontStyle: 'italic', lineHeight: 18, marginTop: 5 },
-  thoughtAction: { fontSize: 10, color: COLORS.textMuted, marginTop: 4 },
-
-  // Grief
-  griefCard: { borderColor: '#1e293b' },
-  griefIcon: { fontSize: 16, marginTop: 1 },
-  griefText: { flex: 1, flexWrap: 'wrap' },
-  griefName: { fontSize: 12, fontWeight: '700', color: '#94a3b8' },
-  griefConnector: { fontSize: 12, color: COLORS.textDim },
-
-  // World event
-  worldCard: { borderColor: '#78350f44' },
-  worldIcon: { fontSize: 16, marginTop: 1 },
-  worldText: { flex: 1, fontSize: 12, color: '#fde68a', lineHeight: 17 },
-
-  // Fed
-  fedCard: { borderColor: COLORS.border, opacity: 0.75 },
-  fedIcon: { fontSize: 14, marginTop: 1 },
-  fedText: { flex: 1, fontSize: 11, color: COLORS.textMuted },
-
-  empty: { alignItems: 'center', paddingTop: 80, gap: 10 },
-  emptyIcon: { fontSize: 32 },
-  emptyText: { fontSize: 13, color: COLORS.textDim, fontStyle: 'italic' },
-})
+  summaryNum: {
+    fontSize: 16,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  summaryLabel: {
+    fontSize: 10,
+    color: COLORS.textSecondary,
+    marginTop: 1,
+  },
+  filterWrap: {
+    marginBottom: 10,
+  },
+  chipsScroll: {
+    paddingHorizontal: 14,
+    gap: 6,
+  },
+  chip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 13,
+    backgroundColor: COLORS.bgCard,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  chipText: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+});

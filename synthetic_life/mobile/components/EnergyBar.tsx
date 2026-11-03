@@ -1,33 +1,100 @@
-import { StyleSheet, Text, View } from 'react-native'
-import { COLORS } from '../constants/theme'
+import React from 'react';
+import { StyleSheet, Text, View } from 'react-native';
+import { COLORS } from '@/constants/theme';
 
-export default function EnergyBar({ energy }: { energy: number }) {
-  const pct = Math.round(Math.max(0, Math.min(100, energy)))
-  const color = pct > 50 ? '#22c55e' : pct > 20 ? '#f59e0b' : '#ef4444'
+interface VitalBarProps {
+  label?: string;
+  value: number; // 0..100
+  maxValue?: number;
+  color?: string;
+  compact?: boolean;
+  showValue?: boolean;
+}
+
+export default function EnergyBar({
+  label,
+  value,
+  maxValue = 100,
+  color,
+  compact = false,
+  showValue = true,
+}: VitalBarProps) {
+  const pct = Math.max(0, Math.min(100, (value / Math.max(1, maxValue)) * 100));
+  const resolvedColor =
+    color ??
+    (pct > 60 ? COLORS.emerald : pct > 28 ? COLORS.gold : COLORS.crimson);
 
   return (
-    <View style={styles.wrapper}>
-      <View style={styles.row}>
-        <Text style={styles.label}>Energy</Text>
-        <Text style={[styles.value, { color }]}>{pct}</Text>
-      </View>
-      <View style={styles.track}>
+    <View style={styles.root}>
+      {(label || showValue) && (
+        <View style={styles.headerRow}>
+          {label ? (
+            <Text style={[styles.label, compact && styles.labelCompact]} numberOfLines={1}>
+              {label}
+            </Text>
+          ) : (
+            <View />
+          )}
+          {showValue && (
+            <Text style={[styles.valueText, { color: resolvedColor }, compact && styles.valueCompact]}>
+              {Math.round(pct)}%
+            </Text>
+          )}
+        </View>
+      )}
+      <View style={[styles.track, compact && styles.trackCompact]}>
         <View
           style={[
             styles.fill,
-            { width: `${pct}%`, backgroundColor: color, shadowColor: color, shadowOpacity: 0.8, shadowRadius: 4, shadowOffset: { width: 0, height: 0 } },
+            {
+              width: `${pct}%`,
+              backgroundColor: resolvedColor,
+            },
           ]}
         />
       </View>
     </View>
-  )
+  );
 }
 
 const styles = StyleSheet.create({
-  wrapper: { marginBottom: 10 },
-  row:  { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
-  label: { fontSize: 12, color: COLORS.textMuted },
-  value: { fontSize: 12, fontWeight: '700', fontVariant: ['tabular-nums'] },
-  track: { height: 6, backgroundColor: '#0e2040', borderRadius: 3, overflow: 'hidden' },
-  fill:  { height: 6, borderRadius: 3 },
-})
+  root: {
+    width: '100%',
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  label: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+    letterSpacing: 0.2,
+  },
+  labelCompact: {
+    fontSize: 10,
+  },
+  valueText: {
+    fontSize: 11,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  valueCompact: {
+    fontSize: 10,
+  },
+  track: {
+    height: 6,
+    borderRadius: 4,
+    backgroundColor: 'rgba(148, 175, 203, 0.12)',
+    overflow: 'hidden',
+  },
+  trackCompact: {
+    height: 4.5,
+  },
+  fill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+});

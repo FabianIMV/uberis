@@ -1,68 +1,91 @@
-import { Tabs } from 'expo-router'
-import { Ionicons } from '@expo/vector-icons'
-import { COLORS } from '../../constants/theme'
+import React from 'react';
+import { Platform, StyleSheet } from 'react-native';
+import { Tabs } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { COLORS } from '@/constants/theme';
 
 export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarStyle: {
-          backgroundColor: '#020b18ee',
-          borderTopColor: '#0e2040',
-          borderTopWidth: 1,
-          height: 60,
-          paddingBottom: 8,
-          paddingTop: 4,
-        },
-        tabBarActiveTintColor:   '#22d3ee',
-        tabBarInactiveTintColor: '#334155',
-        tabBarLabelStyle: { fontSize: 10, fontWeight: '700', letterSpacing: 0.3 },
-        headerStyle:      { backgroundColor: COLORS.bgCard, shadowColor: 'transparent' },
-        headerTintColor:  COLORS.text,
-        headerTitleStyle: { color: COLORS.text, fontWeight: '700', fontSize: 15 },
-        headerShadowVisible: false,
+        headerShown: false,
+        tabBarActiveTintColor: COLORS.cyan,
+        tabBarInactiveTintColor: COLORS.textMuted,
+        tabBarStyle: styles.tabBar,
+        tabBarLabelStyle: styles.tabLabel,
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
           title: 'Mundo',
-          headerShown: false,
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="earth-outline" size={size} color={color} />
+          tabBarIcon: ({ focused }) => (
+            <Ionicons
+              name={focused ? 'planet' : 'planet-outline'}
+              size={21}
+              color={focused ? COLORS.cyan : COLORS.textMuted}
+            />
           ),
         }}
       />
+
       <Tabs.Screen
         name="entities"
         options={{
-          title: 'Almas',
-          headerTitle: 'Almas vivas',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="people-outline" size={size} color={color} />
+          title: 'Seres',
+          tabBarIcon: ({ focused }) => (
+            <Ionicons
+              name={focused ? 'sparkles' : 'sparkles-outline'}
+              size={20}
+              color={focused ? COLORS.cyan : COLORS.textMuted}
+            />
           ),
         }}
       />
+
       <Tabs.Screen
         name="feed"
         options={{
           title: 'Crónicas',
-          headerShown: false,
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="book-outline" size={size} color={color} />
+          tabBarIcon: ({ focused }) => (
+            <Ionicons
+              name={focused ? 'book' : 'book-outline'}
+              size={20}
+              color={focused ? COLORS.cyan : COLORS.textMuted}
+            />
           ),
         }}
       />
+
       <Tabs.Screen
         name="stats"
         options={{
-          title: 'Datos',
-          headerTitle: 'Estado del mundo',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="analytics-outline" size={size} color={color} />
+          title: 'Evolución',
+          tabBarIcon: ({ focused }) => (
+            <Ionicons
+              name={focused ? 'stats-chart' : 'stats-chart-outline'}
+              size={20}
+              color={focused ? COLORS.cyan : COLORS.textMuted}
+            />
           ),
         }}
       />
     </Tabs>
-  )
+  );
 }
+
+const styles = StyleSheet.create({
+  tabBar: {
+    backgroundColor: '#050B18',
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    height: Platform.OS === 'ios' ? 84 : 62,
+    paddingTop: 6,
+    paddingBottom: Platform.OS === 'ios' ? 24 : 8,
+  },
+  tabLabel: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    letterSpacing: 0.25,
+  },
+});

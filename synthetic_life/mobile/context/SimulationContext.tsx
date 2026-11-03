@@ -1,203 +1,474 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
-import { AppState } from 'react-native'
-import { simulation, type SimState, type CatchUpSummary } from '../engine/simulation'
-import { subscribeToApiCalls, isApiConfigured } from '../engine/brain'
-import type { Entity, ConsciousnessLog, LiveEvent, WorldState, Structure, WorldObject } from '../engine/types'
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { AppState, Platform } from 'react-native';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { simulation as rawSimulation } from '@/engine/simulation';
+import type {
+  CatchUpSummary,
+  ConsciousnessLog,
+  DivinePowerId,
+  Entity,
+  ISimulationController,
+  LiveEvent,
+  SimSettings,
+  SimSpeed,
+  SimState,
+} from '@/engine/types';
+import { bioSynth } from '@/audio/bioSynth';
 import {
-  dbGetAllEntities, dbGetEntityThoughts, dbGetWorldTimeline,
-  dbGetEncounters, dbGetStats,
-  type EntityRecord,
-} from '../engine/database'
+  hapticCreatureSelect,
+  hapticDivinePower,
+  hapticForEventCategory,
+  hapticSelection,
+  hapticSoft,
+  hapticSuccess,
+  setHapticsEnabled,
+} from '@/audio/haptics';
 
-// ─── Context shape ──────────────────────────────────────────────────────────
+const simulation: ISimulationController = rawSimulation;
 
-interface SimContextValue {
-  entities:           Entity[]
-  allEntities:        Entity[]
-  worldState:         WorldState
-  liveEvents:         LiveEvent[]
-  logs:               Record<number, ConsciousnessLog[]>
-  structures:         Structure[]
-  worldObjects:       WorldObject[]
-  connected:          true
-  isThinking:         boolean
-  apiEnabled:         boolean
-  feedEntity:            (id: number) => void
-  bathEntity:            (id: number) => void
-  saveNow:               () => Promise<void>
-  addPlayerStructure:    (type: string, zone: string, aura: number) => number
-  removePlayerStructure: (id: number) => void
-  awaySummary:           CatchUpSummary | null
-  dismissAwaySummary:    () => void
+export type FrameSubscriber = (nowMs: number, dtSeconds: number) => void;
+
+export interface CameraFocusRequest {
+  x: number;
+  y: number;
+  scale?: number;
+  nonce: number;
 }
 
-const SimContext = createContext<SimContextValue | null>(null)
+export interface SimulationContextValue {
+  simState: SimState;
+  isReady: boolean;
+  speed: SimSpeed;
+  setSpeed: (nextSpeed: SimSpeed) => void;
+  triggerCognitiveTick: () => Promise<void>;
 
-// ─── Provider ────────────────────────────────────────────────────────────────
+  selectedEntityId: number | null;
+  setSelectedEntityId: (id: number | null) => void;
+  selectedEntity: Entity | null;
+
+  activePower: DivinePowerId;
+  setActivePower: (power: DivinePowerId) => void;
+
+  followSelected: boolean;
+  setFollowSelected: (follow: boolean) => void;
+
+  cameraFocusRequest: CameraFocusRequest | null;
+  focusWorldPoint: (x: number, y: number, scale?: number) => void;
+
+  castPowerAt: (
+    worldX: number,
+    worldY: number,
+    overridePower?: Exclude<DivinePowerId, 'observe'>
+  ) => LiveEvent | null;
+  feedEntity: (entityId: number) => void;
+  healEntity: (entityId: number) => void;
+  blessEntity: (entityId: number) => void;
+  inspectLineage: ISimulationController['inspectLineage'];
+
+  resetWorld: (customSeed?: number) => Promise<void>;
+  saveNow: () => Promise<void>;
+
+  settings: SimSettings;
+  updateSettings: (partial: Partial<SimSettings>) => Promise<void>;
+
+  catchUpSummary: CatchUpSummary | null;
+  clearCatchUpSummary: () => void;
+
+  bannerEvent: LiveEvent | null;
+  dismissBannerEvent: () => void;
+
+  /** Zero-rerender 60fps hook for WorldCanvas */
+  subscribeFrame: (listener: FrameSubscriber) => () => void;
+  getLiveState: () => SimState;
+}
+
+const DEFAULT_SETTINGS: SimSettings = {
+  soundEnabled: true,
+  hapticsEnabled: true,
+  showSenseCones: false,
+  showNames: true,
+  showTrails: true,
+  anthropicApiKey: '',
+};
+
+const SimulationContext = createContext<SimulationContextValue | null>(null);
 
 export function SimulationProvider({ children }: { children: React.ReactNode }) {
-  const [simState, setSimState] = useState<SimState>(simulation.getState())
-  const [isThinking, setIsThinking] = useState(false)
-  const [awaySummary, setAwaySummary] = useState<CatchUpSummary | null>(null)
-  const startedRef = useRef(false)
+  const [simState, setSimState] = useState<SimState>(() => simulation.getState());
+  const [isReady, setIsReady] = useState(false);
+  const [speed, setSpeedState] = useState<SimSpeed>(() => simulation.getSpeed?.() ?? 1);
+  const [selectedEntityId, setSelectedEntityIdState] = useState<number | null>(null);
+  const [activePower, setActivePowerState] = useState<DivinePowerId>('observe');
+  const [followSelected, setFollowSelectedState] = useState<boolean>(false);
+  const [settings, setSettings] = useState<SimSettings>(() =>
+    simulation.getSettings ? simulation.getSettings() : DEFAULT_SETTINGS
+  );
+  const [catchUpSummary, setCatchUpSummary] = useState<CatchUpSummary | null>(null);
+  const [bannerEvent, setBannerEvent] = useState<LiveEvent | null>(null);
+  const [cameraFocusRequest, setCameraFocusRequest] = useState<CameraFocusRequest | null>(null);
 
+  const frameListenersRef = useRef<Set<FrameSubscriber>>(new Set());
+  const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const pushBannerEvent = useCallback((ev: LiveEvent) => {
+    setBannerEvent(ev);
+    if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+    bannerTimerRef.current = setTimeout(() => {
+      setBannerEvent(null);
+    }, 4400);
+  }, []);
+
+  // Keep awake on mobile observatory
   useEffect(() => {
-    const unsub    = simulation.subscribe(setSimState)
-    const unsubApi = subscribeToApiCalls(setIsThinking)
-
-    if (!startedRef.current) {
-      startedRef.current = true
-      simulation.start().then(() => {
-        const summary = simulation.getCatchUpSummary()
-        if (summary) {
-          setAwaySummary(summary)
-          simulation.clearCatchUpSummary()
-        }
-      })
+    if (Platform.OS !== 'web') {
+      void activateKeepAwakeAsync('uberis-observatory').catch(() => {});
+      return () => {
+        void deactivateKeepAwake('uberis-observatory').catch(() => {});
+      };
     }
+    return undefined;
+  }, []);
 
-    // Save world state whenever app goes to background
-    const appSub = AppState.addEventListener('change', appState => {
-      if (appState === 'background' || appState === 'inactive') {
-        simulation.save()
+  // Boot simulation, discrete state subscription & event audio/haptics
+  useEffect(() => {
+    let mounted = true;
+
+    const unsubState = simulation.subscribe((nextState) => {
+      if (!mounted) return;
+      // Shallow clone top-level object reference so React detects discrete tick updates
+      setSimState({ ...nextState });
+      setSpeedState(simulation.getSpeed());
+    });
+
+    const unsubEvent = simulation.onEvent((event) => {
+      if (!mounted) return;
+      bioSynth.playForEventCategory(event.category);
+      hapticForEventCategory(event.category);
+
+      if (
+        event.important ||
+        event.category === 'speciation' ||
+        event.category === 'tribe_founded' ||
+        event.category === 'tech_discovered' ||
+        event.category === 'divine_intervention'
+      ) {
+        pushBannerEvent(event);
       }
-    })
+    });
+
+    void (async () => {
+      try {
+        await simulation.start();
+        if (!mounted) return;
+        const loadedSettings = simulation.getSettings();
+        setSettings(loadedSettings);
+        setHapticsEnabled(loadedSettings.hapticsEnabled);
+        bioSynth.setSoundEnabled(loadedSettings.soundEnabled);
+        if (loadedSettings.soundEnabled) {
+          void bioSynth.ensureInitialized();
+        }
+        setSimState({ ...simulation.getState() });
+        setSpeedState(simulation.getSpeed());
+
+        const catchUp = simulation.getCatchUpSummary();
+        if (catchUp && catchUp.ticksSimulated > 0) {
+          setCatchUpSummary(catchUp);
+        }
+        setIsReady(true);
+      } catch {
+        if (mounted) setIsReady(true);
+      }
+    })();
+
+    const appStateSub = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'background' || nextAppState === 'inactive') {
+        void simulation.saveNow().catch(() => {});
+      }
+    });
 
     return () => {
-      unsub()
-      unsubApi()
-      appSub.remove()
-    }
-  }, [])
+      mounted = false;
+      unsubState();
+      unsubEvent();
+      appStateSub.remove();
+      if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+      simulation.stop();
+    };
+  }, [pushBannerEvent]);
 
-  const value: SimContextValue = {
-    entities:           simState.entities.filter(e => e.is_alive),
-    allEntities:        simState.entities,
-    worldState:         simState.worldState,
-    liveEvents:         simState.liveEvents,
-    logs:               simState.logs,
-    structures:         simState.structures ?? [],
-    worldObjects:       simState.worldObjects ?? [],
-    connected:          true,
-    isThinking,
-    apiEnabled:         isApiConfigured(),
-    feedEntity:            (id) => simulation.feedEntity(id),
-    bathEntity:            (id) => simulation.bathEntity(id),
-    saveNow:               () => simulation.save(),
-    addPlayerStructure:    (type, zone, aura) => simulation.addPlayerStructure(type, zone, aura),
-    removePlayerStructure: (id) => simulation.removePlayerStructure(id),
-    awaySummary,
-    dismissAwaySummary:    () => setAwaySummary(null),
-  }
-
-  return (
-    <SimContext.Provider value={value}>
-      {children}
-    </SimContext.Provider>
-  )
-}
-
-// ─── Hook ────────────────────────────────────────────────────────────────────
-
-export function useSimulation(): SimContextValue {
-  const ctx = useContext(SimContext)
-  if (!ctx) throw new Error('useSimulation must be used inside <SimulationProvider>')
-  return ctx
-}
-
-/** Get one entity by id (includes dead entities). */
-export function useEntityById(id: number | null): Entity | null {
-  const { allEntities } = useSimulation()
-  if (!id) return null
-  return allEntities.find(e => e.id === id) ?? null
-}
-
-/** Get consciousness logs for an entity. */
-export function useEntityLogs(id: number | null): ConsciousnessLog[] {
-  const { logs } = useSimulation()
-  if (!id) return []
-  return (logs[id] ?? []).slice().reverse()   // newest first
-}
-
-// ─── DB-backed hooks ─────────────────────────────────────────────────────────
-
-/** Full thought history for an entity from SQLite (not capped at 20). */
-export function useFullEntityThoughts(id: number | null, limit = 100) {
-  const [thoughts, setThoughts] = useState<ConsciousnessLog[]>([])
+  // 60fps continuous physics & Skia frame loop — ZERO React state updates per frame!
   useEffect(() => {
-    if (!id) { setThoughts([]); return }
-    dbGetEntityThoughts(id, limit).then(setThoughts).catch(() => {})
-  }, [id, limit])
-  const refresh = useCallback(() => {
-    if (!id) return
-    dbGetEntityThoughts(id, limit).then(setThoughts).catch(() => {})
-  }, [id, limit])
-  return { thoughts, refresh }
+    let rafId = 0;
+    let lastTime = performance.now();
+    let active = true;
+
+    const tickFrame = (now: number) => {
+      if (!active) return;
+      const rawDt = (now - lastTime) * 0.001;
+      lastTime = now;
+      const clampedDt = Math.max(0.001, Math.min(0.05, rawDt));
+
+      try {
+        simulation.stepFrame(clampedDt);
+      } catch {
+        // Guard against transient engine frame errors
+      }
+
+      const wallNow = Date.now();
+      frameListenersRef.current.forEach((fn) => {
+        try {
+          fn(wallNow, clampedDt);
+        } catch {
+          // Non-fatal frame subscriber guard
+        }
+      });
+
+      rafId = requestAnimationFrame(tickFrame);
+    };
+
+    rafId = requestAnimationFrame(tickFrame);
+    return () => {
+      active = false;
+      cancelAnimationFrame(rafId);
+    };
+  }, []);
+
+  const subscribeFrame = useCallback((listener: FrameSubscriber) => {
+    frameListenersRef.current.add(listener);
+    return () => {
+      frameListenersRef.current.delete(listener);
+    };
+  }, []);
+
+  const getLiveState = useCallback(() => simulation.getState(), []);
+
+  const setSpeed = useCallback((nextSpeed: SimSpeed) => {
+    hapticSelection();
+    void bioSynth.play('tap', 60);
+    simulation.setSpeed(nextSpeed);
+    setSpeedState(nextSpeed);
+  }, []);
+
+  const triggerCognitiveTick = useCallback(async () => {
+    hapticSoft();
+    void bioSynth.play('tap', 60);
+    await simulation.triggerCognitiveTick();
+    setSimState({ ...simulation.getState() });
+  }, []);
+
+  const setSelectedEntityId = useCallback((id: number | null) => {
+    if (id !== null) {
+      hapticCreatureSelect();
+      void bioSynth.play('tap', 70);
+    } else {
+      setFollowSelectedState(false);
+    }
+    setSelectedEntityIdState(id);
+  }, []);
+
+  const setActivePower = useCallback((power: DivinePowerId) => {
+    hapticSelection();
+    void bioSynth.play('tap', 50);
+    setActivePowerState(power);
+  }, []);
+
+  const setFollowSelected = useCallback((follow: boolean) => {
+    hapticSelection();
+    setFollowSelectedState(follow);
+  }, []);
+
+  const focusWorldPoint = useCallback((x: number, y: number, scale?: number) => {
+    setFollowSelectedState(false);
+    setCameraFocusRequest({ x, y, scale, nonce: Date.now() + Math.random() });
+  }, []);
+
+  const castPowerAt = useCallback(
+    (
+      worldX: number,
+      worldY: number,
+      overridePower?: Exclude<DivinePowerId, 'observe'>
+    ): LiveEvent | null => {
+      const powerToCast =
+        overridePower ?? (activePower !== 'observe' ? activePower : null);
+      if (!powerToCast) return null;
+
+      hapticDivinePower(powerToCast);
+      bioSynth.playForPower(powerToCast);
+
+      const ev = simulation.applyDivinePower(powerToCast, worldX, worldY);
+      setSimState({ ...simulation.getState() });
+      if (ev) {
+        pushBannerEvent(ev);
+      }
+      return ev;
+    },
+    [activePower, pushBannerEvent]
+  );
+
+  const feedEntity = useCallback((entityId: number) => {
+    hapticSoft();
+    void bioSynth.play('nourish', 80);
+    simulation.feedEntity(entityId);
+    setSimState({ ...simulation.getState() });
+  }, []);
+
+  const healEntity = useCallback((entityId: number) => {
+    hapticSoft();
+    void bioSynth.play('solar', 80);
+    simulation.healEntity(entityId);
+    setSimState({ ...simulation.getState() });
+  }, []);
+
+  const blessEntity = useCallback((entityId: number) => {
+    hapticSuccess();
+    void bioSynth.play('discovery', 80);
+    simulation.blessEntity(entityId);
+    setSimState({ ...simulation.getState() });
+  }, []);
+
+  const inspectLineage = useCallback(
+    (entityId: number) => simulation.inspectLineage(entityId),
+    []
+  );
+
+  const resetWorld = useCallback(async (customSeed?: number) => {
+    hapticSuccess();
+    void bioSynth.play('speciation', 100);
+    setSelectedEntityIdState(null);
+    setFollowSelectedState(false);
+    await simulation.resetWorld(customSeed);
+    setSimState({ ...simulation.getState() });
+    setSpeedState(simulation.getSpeed());
+  }, []);
+
+  const saveNow = useCallback(async () => {
+    hapticSoft();
+    await simulation.saveNow();
+  }, []);
+
+  const updateSettings = useCallback(async (partial: Partial<SimSettings>) => {
+    await simulation.updateSettings(partial);
+    const updated = simulation.getSettings();
+    setSettings({ ...updated });
+    if (partial.hapticsEnabled !== undefined) {
+      setHapticsEnabled(updated.hapticsEnabled);
+    }
+    if (partial.soundEnabled !== undefined) {
+      bioSynth.setSoundEnabled(updated.soundEnabled);
+    }
+  }, []);
+
+  const clearCatchUpSummary = useCallback(() => {
+    simulation.clearCatchUpSummary();
+    setCatchUpSummary(null);
+  }, []);
+
+  const dismissBannerEvent = useCallback(() => {
+    setBannerEvent(null);
+  }, []);
+
+  const selectedEntity = useMemo(() => {
+    if (selectedEntityId == null) return null;
+    return simState.entities.find((e) => e.id === selectedEntityId) ?? null;
+  }, [simState.entities, selectedEntityId]);
+
+  const value = useMemo<SimulationContextValue>(
+    () => ({
+      simState,
+      isReady,
+      speed,
+      setSpeed,
+      triggerCognitiveTick,
+      selectedEntityId,
+      setSelectedEntityId,
+      selectedEntity,
+      activePower,
+      setActivePower,
+      followSelected,
+      setFollowSelected,
+      cameraFocusRequest,
+      focusWorldPoint,
+      castPowerAt,
+      feedEntity,
+      healEntity,
+      blessEntity,
+      inspectLineage,
+      resetWorld,
+      saveNow,
+      settings,
+      updateSettings,
+      catchUpSummary,
+      clearCatchUpSummary,
+      bannerEvent,
+      dismissBannerEvent,
+      subscribeFrame,
+      getLiveState,
+    }),
+    [
+      simState,
+      isReady,
+      speed,
+      setSpeed,
+      triggerCognitiveTick,
+      selectedEntityId,
+      setSelectedEntityId,
+      selectedEntity,
+      activePower,
+      setActivePower,
+      followSelected,
+      setFollowSelected,
+      cameraFocusRequest,
+      focusWorldPoint,
+      castPowerAt,
+      feedEntity,
+      healEntity,
+      blessEntity,
+      inspectLineage,
+      resetWorld,
+      saveNow,
+      settings,
+      updateSettings,
+      catchUpSummary,
+      clearCatchUpSummary,
+      bannerEvent,
+      dismissBannerEvent,
+      subscribeFrame,
+      getLiveState,
+    ]
+  );
+
+  return <SimulationContext.Provider value={value}>{children}</SimulationContext.Provider>;
 }
 
-/** Genealogy tree — every entity ever born. */
-export function useGenealogyTree() {
-  const [tree, setTree] = useState<EntityRecord[]>([])
-  useEffect(() => { dbGetAllEntities().then(setTree).catch(() => {}) }, [])
-  const refresh = useCallback(() => { dbGetAllEntities().then(setTree).catch(() => {}) }, [])
-  return { tree, refresh }
-}
-
-/** World timeline from SQLite. */
-export function useWorldTimeline(limit = 200) {
-  const [events, setEvents] = useState<Array<{ id: number; tick: number; type: string; description: string | null; zone: string | null; data_json: string }>>([])
-  useEffect(() => { dbGetWorldTimeline(limit).then(setEvents).catch(() => {}) }, [limit])
-  const refresh = useCallback(() => { dbGetWorldTimeline(limit).then(setEvents).catch(() => {}) }, [limit])
-  return { events, refresh }
-}
-
-/** All-time encounter history. */
-export function useEncounterHistory(limit = 100) {
-  const [encounters, setEncounters] = useState<Array<{
-    id: number; tick: number;
-    entity_a_id: number; entity_b_id: number;
-    entity_a_name: string; entity_b_name: string;
-    outcome: string; dialogue: string | null; zone: string
-  }>>([])
-  useEffect(() => { dbGetEncounters(limit).then(setEncounters).catch(() => {}) }, [limit])
-  const refresh = useCallback(() => { dbGetEncounters(limit).then(setEncounters).catch(() => {}) }, [limit])
-  return { encounters, refresh }
-}
-
-/** Aggregate stats from the DB. */
-export function useDBStats() {
-  const [stats, setStats] = useState<{
-    total_entities: number; total_thoughts: number;
-    total_events: number; total_encounters: number; max_generation: number
-  } | null>(null)
-  useEffect(() => { dbGetStats().then(setStats).catch(() => {}) }, [])
-  const refresh = useCallback(() => { dbGetStats().then(setStats).catch(() => {}) }, [])
-  return { stats, refresh }
-}
-
-// ─── Stats derived from simulation state ─────────────────────────────────────
-
-/** Stats derived from simulation state — no extra fetch needed. */
-export function useSimStats() {
-  const { entities, allEntities } = useSimulation()
-  if (entities.length === 0) return null
-
-  const avgTraits: Record<string, number> = {}
-  for (const trait of ['curiosity', 'aggression', 'empathy', 'creativity', 'survival_drive']) {
-    const sum = entities.reduce((s, e) => s + (e.genome as Record<string,number>)[trait], 0)
-    avgTraits[trait] = sum / entities.length
+export function useSimulation(): SimulationContextValue {
+  const ctx = useContext(SimulationContext);
+  if (!ctx) {
+    throw new Error('useSimulation debe usarse dentro de <SimulationProvider>');
   }
+  return ctx;
+}
 
-  const zoneDist: Record<string, number> = {}
-  for (const e of entities) {
-    zoneDist[e.current_zone] = (zoneDist[e.current_zone] ?? 0) + 1
-  }
+export function useEntityById(entityId: number | null): Entity | null {
+  const { simState } = useSimulation();
+  return useMemo(() => {
+    if (entityId == null) return null;
+    return simState.entities.find((e) => e.id === entityId) ?? null;
+  }, [simState.entities, entityId]);
+}
 
-  return {
-    living_count:     entities.length,
-    total_entities:   allEntities.length,
-    max_generation:   Math.max(...allEntities.map(e => e.generation), 0),
-    avg_traits:       avgTraits,
-    zone_distribution:zoneDist,
-  }
+export function useEntityLogs(entityId: number | null): ConsciousnessLog[] {
+  const { simState } = useSimulation();
+  return useMemo(() => {
+    if (entityId == null) return [];
+    const list = simState.logs[entityId] ?? [];
+    return [...list].sort((a, b) => b.tick - a.tick || b.id - a.id);
+  }, [simState.logs, entityId]);
 }
